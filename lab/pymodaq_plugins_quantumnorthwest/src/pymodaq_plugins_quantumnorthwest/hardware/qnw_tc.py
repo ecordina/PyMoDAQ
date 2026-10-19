@@ -91,6 +91,73 @@ def serial_ports() -> list[str]:
         return []
 
 
+PROBE_ATTEMPTS = 2  # the first byte sent to a freshly opened USB-serial port can be lost: the question is asked twice
+
+
+def probe_port(port: str, baudrate: int = DEFAULT_BAUDRATE, timeout: float = 0.3,
+               port_factory: Callable[..., Any] = open_port, problems: Optional[list[str]] = None) -> Optional[str]:
+    """Find out whether a Quantum Northwest controller is on a serial port, without disturbing anything
+
+    The port is opened (19200 baud, 8N1, no flow control) and asked one question, ``[F1 VN ?]`` (*what is your
+    version?*), a second time if nothing answers (the first byte sent to a freshly opened USB-serial port can be lost),
+    then closed. Nothing else is ever sent: no command which sets something, no other question. It is meant for the
+    ports which may hold a controller (the USB-serial converters), not for the ports of other instruments.
+
+    Parameters
+    ----------
+    port: str
+        the serial port, or a pyserial URL, or ``sim://`` for a simulated controller
+    baudrate: int
+        the controllers talk at 19200 baud
+    timeout: float
+        s, how long each question is given to be answered
+    port_factory:
+        opens the port (it is given the port and the baud rate), to replace it in tests
+    problems: list of str, optional
+        when it is given, why the port could not be used (it cannot be opened because another program holds it, it
+        breaks while it is used) is added to it
+
+    Returns
+    -------
+    The firmware of the controller (``9.1``, ``2.6.04``), None if nothing on the port answers like a controller. Never
+    raises.
+    """
+    sent = protocol.command('VN', '?')
+    echo = protocol.normalized(sent.decode('ascii'))
+    try:
+        opened = port_factory(port, baudrate)
+    except Exception as e:
+        if problems is not None:
+            problems.append(f'{port} cannot be opened: {e}')
+        logger.debug(f'Probing {port}: it cannot be opened: {e}')
+        return None
+    parser = MessageParser()
+    try:
+        opened.reset_input_buffer()  # (what the port said before is not an answer)
+        for _ in range(PROBE_ATTEMPTS):
+            opened.write(sent)
+            opened.flush()
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                data = opened.read(max(1, opened.in_waiting))  # (waits as long as the timeout of the port)
+                for message in parser.feed(data):
+                    # (a line which sends back what it receives says [F1 VN ?] too: that is not a controller)
+                    if message.unit == 'F1' and message.code == 'VN' and message.text \
+                            and protocol.normalized(message.raw) != echo:
+                        return message.text
+        return None
+    except Exception as e:  # (a port which breaks while it is probed has no controller to find)
+        if problems is not None:
+            problems.append(f'{port} cannot be used: {e}')
+        logger.debug(f'Probing {port}: {e}')
+        return None
+    finally:
+        try:
+            opened.close()
+        except Exception as e:
+            logger.debug(f'Closing {port}: {e}')
+
+
 @dataclass
 class Reading:
     """What a message said, and when it was received"""

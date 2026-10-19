@@ -49,8 +49,6 @@ classifiers = [
 
 [project.scripts]
 qnw_tc_check = "pymodaq_plugins_quantumnorthwest.hardware.diagnose:main"  # connect a controller and show what it says
-qnw_tc_start = "pymodaq_plugins_quantumnorthwest.demo:start"  # a Seabreeze spectrometer and a controller on a port
-qnw_tc_demo = "pymodaq_plugins_quantumnorthwest.demo:main"  # a Dashboard with a Mock spectrometer and a simulated controller
 
 [build-system]
 requires = [

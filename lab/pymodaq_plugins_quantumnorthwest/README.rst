@@ -7,7 +7,7 @@ A PyMoDAQ plugin for the temperature controllers of **Quantum Northwest** (QNW):
 It provides one actuator, ``QNW_TC``, whose *position is a temperature* (°C): moving it sets the target temperature of
 the sample holder and switches the temperature control on, its value is the temperature of the holder (or of the
 external probe in the cuvette). Anything of PyMoDAQ which moves an actuator can set the temperature with it: the
-Dashboard, the scans, the PID, ramps, and the ThermoSpectro extension.
+Dashboard, the scans, the PID, ramps, and the ``thermo_*`` applications of ``pymodaq_plugins_thermospectro``.
 
 .. warning::
 
@@ -105,24 +105,20 @@ The **stop** button keeps the holder at the temperature it has now (it becomes t
 **Move relative** changes the *target*, not the temperature of the holder, which takes minutes to reach it.
 The **timeout** of the moves is one hour (a holder is slow).
 
-With ThermoSpectro
-------------------
+With the thermo applications
+----------------------------
 
-``pymodaq_plugins_thermospectro`` makes a temperature ramp by sending its thermostat a new set-point every second:
-this actuator can be that thermostat. In the experiment manager of the Dashboard (*Tools > Experiment*), remove the
-``Mock`` actuator ``Thermo1`` of the preset and add an actuator ``QNW_TC`` with the same name (the type of a module
-cannot be changed, and the extension finds its thermostat by name), save the preset, and connect the modules with the
-button of the extension. Leave **Ramp** at 0. A preset does not keep the settings of a plugin: the module starts with
-the first serial port found (``/dev/ttyUSB0``...), choose the right one in its settings before connecting if it is
-another.
+``pymodaq_plugins_thermospectro`` (the commands ``thermo_2spectro``, ``thermo_spectro``, ``thermo_camera`` and
+``thermo_camera_spectro``) uses this actuator as the thermal controller, named ``Thermo1`` (``Thermo2``). Its command
+**looks for the controller by itself**: it asks, once, the USB-serial converters (FTDI) of the computer for the version of
+the controller (the only thing it sends: ``[F1 VN ?]``, read-only) and gives the port it found to the module; if it does not
+find it, select the port in the settings of the module ``Thermo1`` in the Dashboard (*Port*, or *Other port* for ``COM6``),
+click its *Ini* button, then press Start. The extension then **holds a temperature** (it sends the target once, the
+controller keeps it, it stays there when the log ends) or **runs a ramp** (a new set-point every second: leave **Ramp** at 0,
+the extension makes the ramp). The simulated ports below work with ``--port sim://tc125``.
 
 Trying it without a controller
 ------------------------------
-
-``qnw_tc_demo`` opens the Dashboard with a Mock spectrometer and a simulated TC 125 under the ThermoSpectro extension, already
-connected (``qnw_tc_demo --port sim://tc1b?speed=60`` for another simulated controller).
-
-With the real instruments, ``qnw_tc_start /dev/ttyUSB0`` does the same with a Seabreeze spectrometer and the controller on that port.
 
 The port ``sim://tc125`` (a simulated TC 125), ``sim://qpod`` (the TC 125 of a qpod, as it really answers) or
 ``sim://tc1b`` (a TC 1B) is a simulated controller: it can be tried
