@@ -7,11 +7,12 @@ from pymodaq_utils.utils import ThreadCommand, getLineInfo
 from pymodaq.utils.data import DataFromPlugins, Axis, DataToExport
 from pymodaq.control_modules.viewer_utility_classes import DAQ_Viewer_base, comon_parameters, main
 
-from seabreeze.spectrometers import Spectrometer  # only to annotate: each spectrometer is bound to its backend
-
 from pymodaq_plugins_oceaninsight import set_logger
 from pymodaq_plugins_oceaninsight.hardware.seabreeze_utils import (
-    AUTO, BACKENDS, DEFAULT_BACKEND, open_spectrometer, release_backend, active_pixel_slice)
+    AUTO, BACKENDS, DEFAULT_BACKEND, open_spectrometer, prepare_usb, release_backend, active_pixel_slice)
+
+prepare_usb()  # (Windows: the libusb of libusb-package, and pyseabreeze, before python-seabreeze chooses its backend)
+from seabreeze.spectrometers import Spectrometer  # noqa: E402  only to annotate: each spectrometer is bound to its backend
 
 logger = set_logger(Path(__file__).stem)
 

@@ -6,7 +6,9 @@ Helpers of the Seabreeze viewer plugin that do not need any spectrometer to be c
 * the handling of the electric dark pixels of the detector
 """
 import importlib
+import os
 import re
+import sys
 import threading
 from typing import Iterable, Iterator, Optional
 
@@ -62,6 +64,35 @@ def check_backend(name) -> str:
 # nothing depends on the process wide selection of python-seabreeze.
 # ---------------------------------------------------------------------------------------------------------------------
 
+def prepare_usb() -> Optional[str]:
+    """ Make the libusb library of the ``libusb-package`` package usable by pyusb, on Windows
+
+    pyseabreeze talks to the spectrometers through pyusb, which needs the libusb DLL. ``pip install libusb-package``
+    brings one: its folder is added to the places where Windows looks for DLLs (and to the PATH), and the backend of
+    python-seabreeze is the pure python one unless the environment variable ``SEABREEZE_BACKEND`` says otherwise (the
+    compiled one needs the driver of Ocean Optics, which is not the one of libusb). Nothing is done on the other systems,
+    or when ``libusb-package`` is not installed. It can be called any number of times.
+
+    Returns
+    -------
+    str or None
+        the folder of the DLL which was made available, None if nothing was done
+    """
+    if sys.platform != 'win32':
+        return None
+    try:
+        import libusb_package
+        folder = os.path.dirname(libusb_package.get_library_path())
+    except Exception:  # not installed (or no library in it): the system one is used, if there is one
+        return None
+    if hasattr(os, 'add_dll_directory'):
+        os.add_dll_directory(folder)
+    if folder not in os.environ.get('PATH', '').split(os.pathsep):
+        os.environ['PATH'] = folder + os.pathsep + os.environ.get('PATH', '')
+    os.environ.setdefault('SEABREEZE_BACKEND', DEFAULT_BACKEND)
+    return folder
+
+
 def load_backend(name: str):
     """ Import a python-seabreeze backend
 
@@ -81,6 +112,8 @@ def load_backend(name: str):
         what to do about it
     """
     name = check_backend(name)
+    if name == 'pyseabreeze':
+        prepare_usb()
     try:
         return importlib.import_module(f'seabreeze.{name}')
     except ImportError as e:
@@ -90,6 +123,10 @@ def load_backend(name: str):
 _apis = {}
 _spectrometer_classes = {}
 _lock = threading.Lock()
+# Listing the devices opens each of them (to read its serial number), and so does creating a Spectrometer: two
+# spectrometers connected at the same time (each module has its own thread) would open the same USB devices together
+# and corrupt each other's answers ("Unknown speed setting", "read_eeprom_slot_raw: wrong answer").
+_open_lock = threading.RLock()
 
 
 def get_api(name: str):
@@ -111,7 +148,8 @@ def list_devices(name: str) -> list:
     The backend briefly opens them to read their serial number. The order does not depend on the order in which the
     USB bus gives them, so the first spectrometer is always the same one as long as the same ones are connected.
     """
-    return sorted_devices(get_api(name).list_devices())
+    with _open_lock:
+        return sorted_devices(get_api(name).list_devices())
 
 
 def spectrometer_class(name: str):
@@ -288,10 +326,11 @@ def open_spectrometer(backend: str, selected_device=None, module_title: Optional
     serial = device_serial(selected_device)
     _reserve_backend(backend)
     try:
-        devices = list_devices(backend)
-        if seen is not None:
-            seen[:] = devices
-        return spectrometer(find_device(devices, serial, backend, module_number(module_title)))
+        with _open_lock:  # (one spectrometer at a time: the listing and the opening both talk to the USB devices)
+            devices = list_devices(backend)
+            if seen is not None:
+                seen[:] = devices
+            return spectrometer(find_device(devices, serial, backend, module_number(module_title)))
     except BaseException:
         release_backend(backend)
         raise

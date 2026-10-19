@@ -395,3 +395,110 @@ class TestAutomaticDevice:
 
         with pytest.raises(RuntimeError, match='already open'):
             sbu.open_spectrometer('cseabreeze', sbu.AUTO, module_title='Spectro 3')
+
+
+class TestPrepareUsb:
+    """On Windows pyusb finds the libusb DLL of the libusb-package package, and pyseabreeze is the backend"""
+
+    @pytest.fixture
+    def windows(self, monkeypatch, tmp_path):
+        import os
+        folder = tmp_path / 'libusb_package'
+        folder.mkdir()
+        fake = types.ModuleType('libusb_package')
+        fake.get_library_path = lambda: str(folder / 'libusb-1.0.dll')
+        monkeypatch.setitem(sys.modules, 'libusb_package', fake)
+        monkeypatch.setattr(sys, 'platform', 'win32')
+        added = []
+        monkeypatch.setattr(os, 'add_dll_directory', added.append, raising=False)
+        monkeypatch.setenv('PATH', '/usr/bin')
+        monkeypatch.delenv('SEABREEZE_BACKEND', raising=False)
+        return folder, added
+
+    def test_the_dll_folder_is_made_available(self, windows):
+        import os
+        folder, added = windows
+
+        assert sbu.prepare_usb() == str(folder)
+
+        assert added == [str(folder)]
+        assert os.environ['PATH'].split(os.pathsep) == [str(folder), '/usr/bin']
+        assert os.environ['SEABREEZE_BACKEND'] == 'pyseabreeze'
+
+    def test_it_can_be_called_again(self, windows):
+        import os
+        folder, _ = windows
+
+        sbu.prepare_usb()
+        sbu.prepare_usb()
+
+        assert os.environ['PATH'].split(os.pathsep).count(str(folder)) == 1
+
+    def test_the_backend_chosen_by_the_user_is_kept(self, windows, monkeypatch):
+        import os
+        monkeypatch.setenv('SEABREEZE_BACKEND', 'cseabreeze')
+
+        sbu.prepare_usb()
+
+        assert os.environ['SEABREEZE_BACKEND'] == 'cseabreeze'
+
+    def test_nothing_is_done_without_the_package(self, windows, monkeypatch):
+        import os
+        monkeypatch.setitem(sys.modules, 'libusb_package', None)  # (not installed)
+
+        assert sbu.prepare_usb() is None
+
+        assert os.environ['PATH'] == '/usr/bin' and 'SEABREEZE_BACKEND' not in os.environ
+
+    def test_nothing_is_done_on_linux(self, windows, monkeypatch):
+        import os
+        monkeypatch.setattr(sys, 'platform', 'linux')
+
+        assert sbu.prepare_usb() is None
+
+        assert os.environ['PATH'] == '/usr/bin' and 'SEABREEZE_BACKEND' not in os.environ
+
+    def test_pyseabreeze_is_prepared_before_it_is_imported_and_not_the_other_one(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(sbu, 'prepare_usb', lambda: calls.append('prepared'))
+        monkeypatch.setattr(sbu.importlib, 'import_module', lambda name: calls.append(name) or name)
+
+        sbu.load_backend('pyseabreeze')
+        sbu.load_backend('cseabreeze')
+
+        assert calls == ['prepared', 'seabreeze.pyseabreeze', 'seabreeze.cseabreeze']
+
+
+class TestUsbDevicesAreOpenedOneAtATime:
+    """Two spectrometers initialized together (a thread each) must not open the same USB devices at the same time:
+    they corrupt each other's answers"""
+
+    def test_the_listing_is_serialized(self, monkeypatch):
+        import threading
+        import time
+        state = {'now': 0, 'max': 0}
+
+        class Api:
+            def list_devices(self):
+                state['now'] += 1
+                state['max'] = max(state['max'], state['now'])
+                time.sleep(0.05)
+                state['now'] -= 1
+                return []
+
+        monkeypatch.setattr(sbu, 'get_api', lambda name: Api())
+        threads = [threading.Thread(target=sbu.list_devices, args=('pyseabreeze',)) for _ in range(4)]
+
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        assert state['max'] == 1
+
+    def test_opening_holds_the_lock_while_it_lists_and_opens(self, monkeypatch):
+        """open_spectrometer takes the lock around the listing and the opening: another thread waits for both"""
+        source = Path(sbu.__file__).read_text()
+        body = source[source.index('with _open_lock:  # (one spectrometer at a time'):]
+        assert 'devices = list_devices(backend)' in body.split('except BaseException')[0]
+        assert 'return spectrometer(find_device' in body.split('except BaseException')[0]
