@@ -105,6 +105,8 @@ class DAQ_Move_PID(DAQ_Move_base):
         return cond
 
     def commit_settings(self, param):
+        if self.controller is None:  # not initialized
+            return
         if param.name() == "check_stab":
             pass
         elif param.name() == "queue_length":
@@ -114,7 +116,21 @@ class DAQ_Move_PID(DAQ_Move_base):
             param.setOpts(max=self.controller.queue_points.maxlen)
 
     def ini_stage(self, controller: PIDController = None):
-        """ """
+        """ Initialize the virtual actuator controlling a setpoint of the PID extension
+
+        Parameters
+        ----------
+        controller: PIDController
+            The object given by the PID extension when it creates this actuator (Create SetPoint Actuators action)
+
+        Returns
+        -------
+        str, bool: the info message and whether the actuator is initialized. It cannot be without controller, for
+        instance when it is part of an experiment (preset) loaded by the Dashboard
+        """
+        if controller is None:
+            return ("The PID actuator is created by the PID extension (Create SetPoint Actuators action) that gives it "
+                    "its controller: it cannot be initialized from an experiment", False)
         self.controller = controller
         self.controller.curr_point.connect(self.update_position)
 

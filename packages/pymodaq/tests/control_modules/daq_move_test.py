@@ -61,6 +61,35 @@ class TestMethods:
         assert ControlModule.init_hardware != DAQ_Move.init_hardware
 
 
+class TestFailedInitialization:
+    def test_retries_do_not_accumulate(self, ini_daq_move_ui, monkeypatch):
+        """Each failed initialization used to leave its worker connected to the module: the next attempts then
+        initialized the hardware as many times as there had been attempts"""
+        from pymodaq.extensions.pid.daq_move_PID import DAQ_Move_PID
+
+        daq_move, qtbot, widget = ini_daq_move_ui
+        calls = []
+        ini_stage = DAQ_Move_PID.ini_stage
+
+        def counting_ini_stage(self, controller=None):
+            calls.append(1)
+            return ini_stage(self, controller)
+
+        monkeypatch.setattr(DAQ_Move_PID, 'ini_stage', counting_ini_stage)
+        daq_move.actuator = 'PID'  # without the PID extension to give it a controller, its initialization fails
+
+        for attempt in range(1, 4):
+            calls.clear()
+            with qtbot.waitSignal(daq_move.init_signal, timeout=10000) as blocker:
+                daq_move.init_hardware_ui(True)
+            qtbot.wait(300)  # lets the late duplicates, if any, run
+            assert blocker.args[0] is False
+            assert len(calls) == 1, f"attempt {attempt} initialized the hardware {len(calls)} times"
+
+        daq_move.quit_fun()
+        QtWidgets.QApplication.processEvents()
+
+
 class TestDAQMove:
     def test_buttons_send_one_command(self, ini_daq_move_ui):
         """Changing the actuator rebuilds the UI: buttons must not end up connected twice"""

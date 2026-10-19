@@ -127,6 +127,30 @@ class TestWithUI:
         assert len(prog.viewers) == 1
         assert prog.viewers[0].viewer_type == f'Data{daq_type[3:]}'
 
+def test_failed_initializations_do_not_accumulate(ini_daq_viewer_ui, monkeypatch):
+    """Each failed initialization used to leave its worker connected to the module: the next attempts then
+    initialized the detector as many times as there had been attempts"""
+    from pymodaq_plugins_mock.daq_viewer_plugins.plugins_1D.daq_1Dviewer_Mock import DAQ_1DViewer_Mock
+
+    prog, qtbot, win = ini_daq_viewer_ui
+    calls = []
+
+    def failing_ini_detector(self, controller=None):
+        calls.append(1)
+        raise RuntimeError('no spectrometer')
+
+    monkeypatch.setattr(DAQ_1DViewer_Mock, 'ini_detector', failing_ini_detector)
+    prog.detector = SelectedModule(DAQTypesEnum['DAQ1D'], 'Mock')
+
+    for attempt in range(1, 4):
+        calls.clear()
+        with qtbot.waitSignal(prog.init_signal, timeout=10000) as blocker:
+            prog.init_hardware_ui(True)
+        qtbot.wait(300)  # lets the late duplicates, if any, run
+        assert blocker.args[0] is False
+        assert len(calls) == 1, f"attempt {attempt} initialized the detector {len(calls)} times"
+
+
 def test_viewers_roi_select_and_crosshair_forwarding(ini_daq_viewer_ui):
     """ROIselect and crosshair of each viewer are forwarded to the plugin with the right viewer index"""
     from pymodaq_gui.plotting.data_viewers.viewer2D import Viewer2D

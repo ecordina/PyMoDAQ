@@ -735,6 +735,18 @@ class ParameterControlModule(ParameterManager, LECOComponentMixin, ControlModule
         except Exception as e:
             self.logger.exception(str(e))
 
+    def _close_failed_hardware(self):
+        """Close what a previous initialization that did not succeed left behind
+
+        Its worker is still connected to :attr:`command_hardware` (and to the settings), and its thread is still
+        running if this module is the master: a new initialization would be run by all of them too, so the hardware
+        would be initialized as many times as there were attempts.
+        """
+        thread = self._controller_and_thread.thread
+        if (not self._controller_and_thread.initialized and thread is not None
+                and self.title in getattr(thread, 'hardware_names', [])):
+            self._close_hardware()
+
     # ------------------------------------------------------------------
     # init_hardware template method
     # ------------------------------------------------------------------
@@ -750,6 +762,7 @@ class ParameterControlModule(ParameterManager, LECOComponentMixin, ControlModule
         The deinit path is handled by :meth:`_close_hardware`.
         The init path follows a template:
 
+        0. :meth:`_close_failed_hardware` — close what a previous failed initialization left
         1. :meth:`_create_hardware` — instantiate the hardware worker (abstract)
         2. :meth:`_setup_hardware_thread` — move worker to thread and start it
         3. connect common signals (``command_hardware``, ``status_sig``, ``_update_settings_signal``)
@@ -761,6 +774,7 @@ class ParameterControlModule(ParameterManager, LECOComponentMixin, ControlModule
         if not do_init:
             self._close_hardware()
             return
+        self._close_failed_hardware()
         try:
             hardware = self._create_hardware()
             if self.controller_and_thread.is_master:
