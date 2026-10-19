@@ -1,5 +1,11 @@
 # -*- coding: utf-8 -*-
-"""ThermoSpectro: one or two spectrometers and a camera, each with a thermostat, recorded during temperature ramps
+"""ThermoSpectro: the base of the five applications which log spectrometers and a camera, each with a thermostat
+
+This class is not an extension of the Dashboard by itself: the five applications (``thermo_2spectro``,
+``thermo_spectro``, ``camera``, ``thermo_camera``, ``thermo_camera_spectro``, see :mod:`.configurations`) are its
+subclasses, in the modules of this folder, each with the units (and so the settings and windows) of its instruments
+only. Each thermostat is either held at a temperature or runs a ramp, and one Start / Stop logs everything until Stop
+or for a given time.
 
 The extension drives *units*, a unit being a spectrometer (a 1D detector of the Dashboard) and the thermostat (an
 actuator whose position is a temperature) controlling its temperature. One or two units can be used, with their own
@@ -48,7 +54,7 @@ from pymodaq_gui.utils.shared_ui import MenuToolbarNames
 from pymodaq.control_modules.enums import DAQTypesEnum
 from pymodaq.extensions.utils import CustomExt
 
-from pymodaq_plugins_thermospectro import saving
+from pymodaq_plugins_thermospectro import configurations, saving
 from pymodaq_plugins_thermospectro.camera import RectRoi, default_rect_rois
 from pymodaq_plugins_thermospectro.camera_widgets import HINT as CAMERA_HINT
 from pymodaq_plugins_thermospectro.ramp import format_duration
@@ -56,17 +62,17 @@ from pymodaq_plugins_thermospectro.roi_manager import HINT
 from pymodaq_plugins_thermospectro.rois import RoiStore, default_store_path
 from pymodaq_plugins_thermospectro.saving import ThermoSpectroSaver, UnitRecording, build_dtes
 from pymodaq_plugins_thermospectro.unit import CameraUnit, Measurement, Problem, Unit, UnitState, logged
-from pymodaq_plugins_thermospectro.unit_settings import (CAMERA, NONE, CameraSettings, UnitSettings,
+from pymodaq_plugins_thermospectro.unit_settings import (CAMERA, CONTROL_RAMP, NONE, CameraSettings, UnitSettings,
                                                          unit_definition)
 from pymodaq_plugins_thermospectro.views import TEMPERATURE, CameraView, UnitView
 
 logger = set_logger(get_module_name(__file__))
 
-EXTENSION_NAME = 'ThermoSpectro'  # the name displayed in the extension list of the dashboard
-CLASS_NAME = 'ThermoSpectro'
-
-NUMBERS = (1, 2, 3)  # the units: spectrometer 1 and 2, and the camera
-CAMERA_NUMBER = 3
+# (This class is the base of the five applications of the lab, see :mod:`.configurations`: it is not an extension of the
+# Dashboard by itself, each of them is, with its own EXTENSION_NAME and CLASS_NAME, in a module of this folder.)
+CAMERA_NUMBER = configurations.CAMERA_NUMBER
+LOG_UNTIL_STOPPED = 'Until I stop it'
+LOG_TIMED = 'For a given time'
 
 
 def guess_thermostat(actuators: list[str], number: int) -> str:
@@ -92,6 +98,12 @@ class ThermoSpectro(CustomExt):
     show_h5file_statusbar_widgets = True
     show_workflow_actions = True
     icon_name = 'equalizer'
+    #: The units of the application: 1 and 2 are spectrometers, 3 is the camera. Only these have settings and windows.
+    NUMBERS = (1, 2, 3)
+    #: Whether the application has a thermal controller: without one, what is about the temperature is not shown
+    THERMOSTATS = True
+    #: What a thermal controller does at first: holds one temperature (the five applications), or runs a ramp
+    CONTROL = CONTROL_RAMP
 
     def __init__(self, parent: gutils.DockArea, dashboard):
         # the base class may call do_things_after_experiment_set(), so what it uses is defined first
@@ -106,6 +118,8 @@ class ThermoSpectro(CustomExt):
         self._run_active = False
         self._finishing = False
         self._pending_start = False
+        self._duration_stop_asked = False
+        self._ending = False  # a stop was asked: the log ends when the ramps are back, whatever the other units do
         self._saving = False
         self._swmr = False
         self._recordings: dict[int, UnitRecording] = {}
@@ -119,7 +133,7 @@ class ThermoSpectro(CustomExt):
         self._worker = ThermoSpectroWorker(self)
         self._module_and_data_saver = ThermoSpectroSaver(self)
 
-        for number in NUMBERS:
+        for number in self.NUMBERS:
             if number == CAMERA_NUMBER:
                 unit = CameraUnit(CameraSettings(self.settings.child(f'unit{number}'), number), self.modules_manager,
                                   parent=self)
@@ -183,28 +197,47 @@ class ThermoSpectro(CustomExt):
     # ----------------------------------------------------------------------------------------------------------
     def _build_params(self) -> list[dict]:
         return [
-            unit_definition(number, self._store.load(number)) for number in NUMBERS if number != CAMERA_NUMBER
+            unit_definition(number, self._store.load(number), thermostat=self.THERMOSTATS, control=self.CONTROL)
+            for number in self.NUMBERS if number != CAMERA_NUMBER
         ] + [
-            unit_definition(CAMERA_NUMBER, self._store.load(CAMERA_NUMBER, RectRoi, default_rect_rois), kind=CAMERA)
+            unit_definition(CAMERA_NUMBER, self._store.load(CAMERA_NUMBER, RectRoi, default_rect_rois), kind=CAMERA,
+                            thermostat=self.THERMOSTATS, control=self.CONTROL)
+            for number in self.NUMBERS if number == CAMERA_NUMBER
         ] + [
             {'title': 'Experiment:', 'name': 'experiment', 'type': 'group', 'children': [
                 {'title': 'Set-point every:', 'name': 'update_period', 'type': 'float', 'value': 1.0, 'min': 0.05,
-                 'suffix': 's', 'tip': 'How often the thermostats are given a new set-point during a ramp'},
+                 'suffix': 's', 'visible': self.THERMOSTATS,
+                 'tip': 'How often the thermostats are given a new set-point during a ramp'},
+                {'title': 'Log for:', 'name': 'log_for', 'type': 'list', 'limits': [LOG_UNTIL_STOPPED, LOG_TIMED],
+                 'value': LOG_UNTIL_STOPPED,
+                 'tip': 'Record until Stop is pressed (any number of days), or for a given time. A thermal controller '
+                        'which is held at a temperature stays at it when the log ends; a ramp is brought back to its '
+                        'initial temperature'},
+                {'title': 'Duration:', 'name': 'hours', 'type': 'float', 'value': 24.0, 'min': 0.0001, 'suffix': 'h',
+                 'tip': 'How long the log lasts when it is for a given time (48 for two days)'},
                 {'title': 'Stop if no data for:', 'name': 'watchdog', 'type': 'float', 'value': 30.0, 'min': 0.,
                  'suffix': 's', 'tip': 'The ramp of a unit is brought back to its initial value if its spectrometer '
                                        'or its thermostat does not deliver anything for this long (at least a few '
-                                       'readout times). 0: never'},
+                                       'readout times); a unit which holds a temperature (or only records) is told '
+                                       'and goes on. 0: never'},
                 {'title': 'Plot the last:', 'name': 'history', 'type': 'float', 'value': 0.0, 'min': 0.,
                  'suffix': 'min', 'tip': '0: plot everything since the start'},
                 {'title': 'Elapsed:', 'name': 'elapsed', 'type': 'str', 'value': '', 'readonly': True},
+                {'title': 'Remaining:', 'name': 'remaining', 'type': 'str', 'value': '', 'readonly': True},
             ]},
         ] + SaverWorker.params
 
     def unit(self, number: int) -> Unit:
-        return self.units[number - 1]
+        for unit in self.units:
+            if unit.number == number:
+                return unit
+        raise KeyError(f'This application has no unit {number} (it has {", ".join(str(u.number) for u in self.units)})')
 
     def view(self, number: int) -> UnitView:
-        return self.views[number - 1]
+        for view in self.views:
+            if view.number == number:
+                return view
+        raise KeyError(f'This application has no unit {number}')
 
     def _active_units(self) -> list[Unit]:
         """The units which take part: those which are ticked"""
@@ -222,8 +255,45 @@ class ThermoSpectro(CustomExt):
                 except Exception:
                     logger.warning(f"The settings of unit {unit.number} have no {'/'.join(path)} button")
 
+    @staticmethod
+    def _setting_paths(param: Parameter, prefix: tuple = ()) -> set:
+        """The paths of all the parameters under `param`, except the ones of the ROIs (they are what the user made)"""
+        paths = set()
+        for child in param.children():
+            path = prefix + (child.name(),)
+            paths.add(path)
+            if child.name() != 'rois':
+                paths |= ThermoSpectro._setting_paths(child, path)
+        return paths
+
+    def _missing_settings(self, new: Parameter) -> list[str]:
+        """What a tree of settings lacks to replace the current one (a file of another application, or of an older
+        version of this one)"""
+        missing = self._setting_paths(self.settings) - self._setting_paths(new)
+        return sorted('/'.join(path) for path in missing)
+
     def set_settings(self, settings):
-        """Settings loaded from a file replace the whole tree: the units follow"""
+        """Settings loaded from a file replace the whole tree: the units follow
+
+        A tree which does not have all the settings of this application (a file saved by another application or by an
+        older version) is not loaded: it would leave the application without the parameters it reads.
+        """
+        if self.units:
+            try:
+                new = self.create_parameter(settings)
+            except Exception as e:
+                logger.exception('The settings could not be read')
+                self.show_message('Settings not loaded', f'The settings could not be read: {e}', error=True)
+                return
+            missing = self._missing_settings(new)
+            if missing:
+                shown = ', '.join(missing[:5]) + (' ...' if len(missing) > 5 else '')
+                logger.warning(f'Settings not loaded: they lack {shown}')
+                self.show_message('Settings not loaded',
+                                  'This file was not saved by this application (or by an older version of it): it '
+                                  f'lacks {shown}. The settings are left as they are.', error=True)
+                return
+            settings = new
         super().set_settings(settings)
         if not self.units:
             return
@@ -233,12 +303,24 @@ class ThermoSpectro(CustomExt):
             unit.settings.refresh_ramp()
             if unit.state == UnitState.IDLE:
                 unit.attach()
+        self._hide_what_is_not_used()
         self._connect_buttons()
         if self._run_active:  # (the toolbar loading settings is disabled during a run)
             self._lock_ui(True)
         self._update_all_views()
         for unit in self.units:
             self._schedule_roi_save(unit)
+
+    def _apply_filter(self, text: str):
+        """The search box of the settings shows every parameter again when it is emptied: what is hidden stays hidden"""
+        super()._apply_filter(text)
+        self._hide_what_is_not_used()
+
+    def _hide_what_is_not_used(self):
+        for unit in getattr(self, 'units', []):
+            unit.settings.hide_unused(self.THERMOSTATS)
+        if not self.THERMOSTATS:
+            self.settings.child('experiment', 'update_period').setOpts(visible=False)
 
     def value_changed(self, param: Parameter):
         if not self.units:
@@ -310,7 +392,7 @@ class ThermoSpectro(CustomExt):
         layout.setContentsMargins(0, 0, 0, 0)
         for view in self.views:
             layout.addWidget(view.manager_box, 1)
-        hint = QtWidgets.QLabel(f'{HINT}\nCamera: {CAMERA_HINT}')
+        hint = QtWidgets.QLabel(self._roi_hint())
         hint.setWordWrap(True)
         hint.setStyleSheet('color: #888888;')
         layout.addWidget(hint)
@@ -324,15 +406,15 @@ class ThermoSpectro(CustomExt):
         area.addDock(self.docks['settings'])
         area.addDock(self.docks['saving'], 'below', self.docks['settings'])
         area.addDock(self.docks['roimanager'], 'below', self.docks['saving'])
-        area.addDock(self.docks['spectrum1'], 'right', self.docks['settings'])
-        area.addDock(self.docks['spectrum2'], 'right', self.docks['spectrum1'])
-        area.addDock(self.docks[f'spectrum{CAMERA_NUMBER}'], 'right', self.docks['spectrum2'])
-        area.addDock(self.docks['rois1'], 'bottom', self.docks['spectrum1'])
-        area.addDock(self.docks['rois2'], 'bottom', self.docks['spectrum2'])
-        area.addDock(self.docks[f'rois{CAMERA_NUMBER}'], 'bottom', self.docks[f'spectrum{CAMERA_NUMBER}'])
+        previous = 'settings'
+        for number in self.NUMBERS:  # the spectra (images) in a row...
+            area.addDock(self.docks[f'spectrum{number}'], 'right', self.docks[previous])
+            previous = f'spectrum{number}'
+        for number in self.NUMBERS:  # ... and the ROIs below each of them: a column for each unit
+            area.addDock(self.docks[f'rois{number}'], 'bottom', self.docks[f'spectrum{number}'])
         self.docks['settings'].raiseDock()
         self.docks['settings'].setStretch(x=1, y=1)
-        for number in NUMBERS:
+        for number in self.NUMBERS:
             self.docks[f'spectrum{number}'].setStretch(x=3, y=1)
             self.docks[f'rois{number}'].setStretch(x=3, y=4)
         for key, dock in self.docks.items():
@@ -343,7 +425,7 @@ class ThermoSpectro(CustomExt):
         """The spectra take a fifth of the height of the plots, the image of the camera a bit more than a half; the rest
         of the proportions wait for the window"""
         try:
-            for number in NUMBERS:
+            for number in self.NUMBERS:
                 container = self.docks[f'spectrum{number}'].container()
                 if container is not None and container.count() == 2:
                     # (a spectrum is a small strip above its curves; the image of the camera gets half of the height)
@@ -398,17 +480,45 @@ class ThermoSpectro(CustomExt):
         self.add_menu('plots', 'Plots', parent_menu=menubar)
         self.create_dashboard_toolbar(add_break=False)
 
-    DOCK_TITLES = {'settings': 'Settings', 'saving': 'Saving', 'roimanager': 'ROI manager', 'spectrum1': 'Spectrum 1',
-                   'rois1': 'ROIs 1', 'spectrum2': 'Spectrum 2', 'rois2': 'ROIs 2', 'spectrum3': 'Image',
-                   'rois3': 'ROIs camera'}
+    @property
+    def DOCK_TITLES(self) -> dict:
+        """What each window is called in the Plots menu"""
+        titles = {'settings': 'Settings', 'saving': 'Saving', 'roimanager': 'ROI manager'}
+        for number in self.NUMBERS:
+            titles[f'spectrum{number}'] = 'Image' if number == CAMERA_NUMBER else f'Spectrum {number}'
+            titles[f'rois{number}'] = 'ROIs camera' if number == CAMERA_NUMBER else f'ROIs {number}'
+        return titles
+
+    def _roi_hint(self) -> str:
+        """How to edit the ROIs, of the instruments this application has"""
+        has_camera = CAMERA_NUMBER in self.NUMBERS
+        if not has_camera:
+            return HINT
+        return f'{HINT}\nCamera: {CAMERA_HINT}' if len(self.NUMBERS) > 1 else CAMERA_HINT
+
+    def _instrument_words(self) -> tuple[str, str]:
+        """The instruments of this application in words: (the detectors, the detectors and the thermal controllers)"""
+        spectrometers = [number for number in self.NUMBERS if number != CAMERA_NUMBER]
+        detectors = []
+        if spectrometers:
+            detectors.append('spectrometers' if len(spectrometers) > 1 else 'spectrometer')
+        if CAMERA_NUMBER in self.NUMBERS:
+            detectors.append('camera')
+        detectors = ' and '.join(detectors)
+        if not self.THERMOSTATS:
+            return detectors, detectors
+        many = len(spectrometers) > 1
+        return detectors, f'{detectors} and thermal controller' + ('s' if many else '')
 
     def setup_actions(self):
         self.toolbar.addSeparator()
-        self.add_action('monitor', 'Live', 'videocam', 'Read the spectrometers out and show the spectra and the ROIs '
-                        'live, without running the temperature ramps', checkable=True, icon_checked='videocam_off',
+        detectors, everything = self._instrument_words()
+        ramps = ', without running the temperature ramps' if self.THERMOSTATS else ''
+        self.add_action('monitor', 'Live', 'videocam', f'Read the {detectors} out and show the images or spectra and '
+                        f'the ROIs live{ramps}', checkable=True, icon_checked='videocam_off',
                         toolbar=self.toolbar, menu='actions')
         self.add_action('initialize', 'Connect the modules', 'plug_connect',
-                        'Connect (initialize) the spectrometers and thermostats of the units which are not, one after '
+                        f'Connect (initialize) the {everything} of the units which are not, one after '
                         'the other. Nothing is connected when a preset is opened', toolbar=self.toolbar,
                         menu='actions')
         for key in self.docks:
@@ -419,7 +529,7 @@ class ThermoSpectro(CustomExt):
     def connect_things(self):
         self.status_signal[str].connect(self._on_status_signal)
         self.connect_action('monitor', self.set_monitoring)
-        self.connect_action('initialize', self.initialize_modules)
+        self.connect_action('initialize', lambda *_: self.initialize_modules())  # (the button says if it is checked)
         self.connect_action(WorkFlowActions.START, self.start_run)
         self.connect_action(WorkFlowActions.STOP, self.stop_run)
         self.connect_action(WorkFlowActions.PAUSE, self.pause_run)
@@ -457,9 +567,14 @@ class ThermoSpectro(CustomExt):
             number = int(key[-1])
             spectrum = key.startswith('spectrum')
             kind, other = ('spectrum', 'rois') if spectrum else ('rois', 'spectrum')
-            choices[key] = [('top' if spectrum else 'bottom', f'{other}{number}'),
-                            ('right', f'{kind}{number - 1}'), ('left', f'{kind}{number + 1}'),
-                            ('right', 'settings'), ('left', None)]
+            order = list(self.NUMBERS)  # (the unit before and the unit after, among the units of the application)
+            index = order.index(number) if number in order else 0
+            before = order[index - 1] if index > 0 else None
+            after = order[index + 1] if index + 1 < len(order) else None
+            choices[key] = [('top' if spectrum else 'bottom', f'{other}{number}')]
+            choices[key] += [('right', f'{kind}{before}')] if before is not None else []
+            choices[key] += [('left', f'{kind}{after}')] if after is not None else []
+            choices[key] += [('right', 'settings'), ('left', None)]
         for position, neighbor_key in choices.get(key, [('left', None)]):
             neighbor = self.docks.get(neighbor_key) if neighbor_key else None
             if neighbor_key and (neighbor is None or neighbor.container() is None):
@@ -590,7 +705,7 @@ class ThermoSpectro(CustomExt):
                                  for other in self.units if other is not unit)
                     settings.child('ramp', 'run').setValue(not shared)
             unit.attach()
-        # (the extension of `dashboard -x preset -e ThermoSpectro` starts while the preset is still being loaded: the
+        # (an extension started from a preset (`dashboard -x preset -e ...`) starts while the preset is still being loaded: the
         # units are ticked when the modules are there)
         self._modules_offered = self._modules_offered or bool(detectors) or bool(cameras)
 
@@ -614,17 +729,24 @@ class ThermoSpectro(CustomExt):
             view.update_definitions()
             view.clear('waiting for data' if view.unit.detector is not None else view.no_detector_message())
 
-    def initialize_modules(self):
-        """Initialize the modules of the units which are not initialized yet, one after the other
+    def show_message(self, title: str, text: str, error: bool = False):
+        """Tell the user something without blocking (the launcher uses it to say which instrument was not recognized)"""
+        self._notify(title, text, error=error)
+
+    def initialize_modules(self, modules: Optional[Sequence] = None):
+        """Initialize the modules of the units which are not initialized yet, one after the other (only `modules`, if
+        they are given: the launcher connects the instruments it recognized and leaves the others to the user)
 
         Two spectrometers must not look for their device together: the next module is initialized when the previous
         one is done, whether it worked or not (or after a minute, if it does not say anything). The modules which could
         not be initialized are told at the end.
         """
+        wanted = list(modules) if modules is not None else None
         modules = []
         for unit in self._active_units():
             for module in (unit.detector, unit.thermostat):
-                if module is not None and not module.initialized_state and module not in modules:
+                if module is not None and not module.initialized_state and module not in modules \
+                        and (wanted is None or module in wanted):
                     modules.append(module)
         self._stop_waiting_for_init()
         self._init_queue = modules
@@ -696,9 +818,9 @@ class ThermoSpectro(CustomExt):
                 if first.detector is not None and first.detector is second.detector:
                     problems.append(f'The {names} are the same module')
                 if (first.thermostat is not None and first.thermostat is second.thermostat
-                        and first.has_program and second.has_program):
+                        and first.drives and second.drives):
                     problems.append(f'The {names} would both drive the '
-                                    f'thermostat {first.thermostat.title}: untick "Run the ramp" for one of them')
+                                    f'thermostat {first.thermostat.title}: untick "Drive it" for one of them')
         return problems
 
     def _take_current_temperature(self, unit: Unit):
@@ -846,7 +968,7 @@ class ThermoSpectro(CustomExt):
             unit.settings.lock(locked)
         for view in self.views:
             view.set_locked(locked)
-        for leaf in ('update_period', 'watchdog'):
+        for leaf in ('update_period', 'watchdog', 'log_for', 'hours'):
             self.settings.child('experiment', leaf).setOpts(enabled=not locked)
         self.set_action_enabled('monitor', not locked)
         self.set_action_enabled('initialize', not locked)
@@ -860,10 +982,7 @@ class ThermoSpectro(CustomExt):
             if self.h5_manager.has_action(action):
                 self.h5_manager.set_action_enabled(action, not locked)
         self.docks['saving'].setEnabled(not locked)
-        if locked:
-            self._lock_modules(True)
-        elif not self._monitoring:
-            self._lock_modules(False)
+        self._lock_modules(locked or self._monitoring)  # (the modules in use are not swapped during a live view either)
 
     # ----------------------------------------------------------------------------------------------------------
     # live view
@@ -954,6 +1073,8 @@ class ThermoSpectro(CustomExt):
             if unit.state == UnitState.IDLE:
                 unit.attach()
         problems = self._check_cross_problems(units) + [p for unit in units for p in unit.problems()]
+        if not problems:  # (the temperatures: they are not a problem for the live view)
+            problems = [p for unit in units for p in unit.run_problems()]
         if problems:
             self._report_problems(problems)
             return
@@ -1026,6 +1147,8 @@ class ThermoSpectro(CustomExt):
             elif self.is_action_checked(WorkFlowActions.LOG):
                 self.status_signal.emit('Nothing is recorded: no spectrum, ROI or temperature is ticked')
             self._origin = origin
+            self._duration_stop_asked = False
+            self._ending = False
             for unit in units:
                 unit.begin_run(origin, now)
             self._run_active = True
@@ -1069,8 +1192,22 @@ class ThermoSpectro(CustomExt):
             unit.program_tick(now)
         self._check_watchdogs()
         self._show_status()
+        if self._duration_over() and not self._duration_stop_asked:
+            self._duration_stop_asked = True  # (once: a second Stop would offer to leave a returning ramp where it is)
+            self.stop_run(reason='The duration of the log is over', ask=False)
+            return
         if self._experiment_over():
             self._finish_run(self._over_message())
+
+    def log_duration(self) -> Optional[float]:
+        """s, how long the log lasts, None if it lasts until Stop is pressed"""
+        if self.settings['experiment', 'log_for'] != LOG_TIMED:
+            return None
+        return float(self.settings['experiment', 'hours']) * 3600.
+
+    def _duration_over(self) -> bool:
+        limit = self.log_duration()
+        return limit is not None and time.time() - self._origin >= limit
 
     def _check_watchdogs(self):
         """A spectrometer or a thermostat which delivers nothing any more: its ramp is brought back"""
@@ -1078,7 +1215,7 @@ class ThermoSpectro(CustomExt):
         for unit in self._running_units():
             found = unit.silent_for(now, self._watchdog_limit(unit))
             if found is not None:
-                unit.fail(*found)
+                unit.fail(*found, halt=unit.runner is not None)  # (a held temperature is logged on: the data may come back)
 
     def _experiment_units(self) -> list[Unit]:
         return [unit for unit in self.units if unit.state == UnitState.RUNNING]
@@ -1089,9 +1226,10 @@ class ThermoSpectro(CustomExt):
         if not units:
             return False
         programmed = [unit for unit in units if unit.program is not None]
-        if programmed:
-            return all(unit.program_over for unit in programmed)
-        return all(unit.failed for unit in units)
+        holding = any(unit.hold_target is not None for unit in units)
+        if programmed and (self._ending or not holding):
+            return all(unit.program_over for unit in programmed)  # (a held unit stays where it is when the log ends)
+        return all(unit.failed for unit in units)  # (a held temperature is logged until Stop or the end of the duration)
 
     def _over_message(self) -> str:
         programmed = [unit for unit in self._experiment_units() if unit.program is not None]
@@ -1100,8 +1238,11 @@ class ThermoSpectro(CustomExt):
     def _show_status(self):
         units = self._experiment_units()
         elapsed = format_duration(time.time() - self._origin)
+        limit = self.log_duration()
+        remaining = 'until Stop' if limit is None else f'{format_duration(max(0., limit - (time.time() - self._origin)))} left'
         self.settings.child('experiment', 'elapsed').setValue(elapsed)
-        self.set_permanent_status(f'{elapsed}  ' + '   |   '.join(unit.status_text() for unit in units))
+        self.settings.child('experiment', 'remaining').setValue(remaining)
+        self.set_permanent_status(f'{elapsed} ({remaining})  ' + '   |   '.join(unit.status_text() for unit in units))
 
     def pause_run(self, pause: bool = True):
         """Freeze the set-points (the recording goes on) or carry on"""
@@ -1112,10 +1253,11 @@ class ThermoSpectro(CustomExt):
             unit.pause(now, pause)
         self._on_ramp_tick()
 
-    def stop_run(self, *_, reason: str = 'Stopped by the user'):
-        """Bring the thermostats back to their initial value, then end the experiment
+    def stop_run(self, *_, reason: str = 'Stopped by the user', ask: bool = True):
+        """Bring the ramps back to their initial value, then end the experiment (a held temperature is left as it is)
 
-        A second call, while they are on their way back, offers to stop right there.
+        A second call, while they are on their way back, offers to stop right there (unless `ask` is False: the end of
+        the duration of a log does not ask anybody, the log ends when the ramps are back).
         """
         if self._pending_start:
             self._pending_start = False
@@ -1126,6 +1268,7 @@ class ThermoSpectro(CustomExt):
         now = time.perf_counter()
         programmed = [unit for unit in self._running_units() if unit.program is not None and not unit.program_over]
         cycling = [unit for unit in programmed if not unit.returning]
+        self._ending = True  # (from now on the log ends when the ramps are over, even if a unit holds a temperature)
         if cycling:
             for unit in cycling:
                 unit.stop_program(now, reason)
@@ -1134,8 +1277,10 @@ class ThermoSpectro(CustomExt):
             self._on_ramp_tick()
             return
         if programmed:
-            if self._ask_abort_return():
+            if ask and self._ask_abort_return():
                 self._finish_run('Stopped before the thermostats were back to their initial temperature', abort=True)
+            elif not ask:
+                self._on_ramp_tick()  # (they are on their way back: the log ends when they are)
             return
         self._finish_run(reason)  # nothing to bring back
 

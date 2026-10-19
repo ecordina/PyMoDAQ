@@ -25,6 +25,13 @@ SPECTROMETER = 'spectrometer'  # the kinds of unit: a 1D detector...
 CAMERA = 'camera'  # ... or a 2D one
 ROI_NAME = re.compile(r'^roi\d+$')
 
+#: What a thermal controller does during a run
+CONTROL_RAMP = 'Run a ramp'
+CONTROL_HOLD = 'Hold at a temperature'
+#: The fields of a ramp (they are hidden when the controller is held at one temperature)
+RAMP_FIELDS = ('mode', 'initial', 'take_current', 'final', 'velocity', 'duration', 'hold_final', 'back_mode',
+               'back_velocity', 'back_duration', 'hold_initial', 'n_cycles', 'cycle_duration')
+
 #: The default times of a spectrometer
 DEFAULT_INTEGRATION_TIME = 500.0  # ms
 DEFAULT_READOUT_TIME = 1.0  # s
@@ -61,7 +68,8 @@ def rect_roi_definition(key: str, roi: RectRoi, units: str = camera.UNITS) -> di
     ]}
 
 
-def unit_definition(number: int, rois: Sequence[Roi], enabled: bool = True, kind: str = SPECTROMETER) -> dict:
+def unit_definition(number: int, rois: Sequence[Roi], enabled: bool = True, kind: str = SPECTROMETER,
+                    thermostat: bool = True, control: str = CONTROL_RAMP) -> dict:
     """The parameter tree of a unit
 
     Parameters
@@ -74,7 +82,41 @@ def unit_definition(number: int, rois: Sequence[Roi], enabled: bool = True, kind
         Whether the unit is used
     kind: str
         ``spectrometer`` (a 1D detector, the default) or ``camera`` (a 2D one)
+    thermostat: bool
+        False for an application without thermal controller: what is about the temperature is in the tree (the code
+        reads it) but hidden
+    control: str
+        What the thermal controller does by default: :data:`CONTROL_HOLD` or :data:`CONTROL_RAMP`
     """
+    definition = _unit_definition(number, rois, enabled, kind, control)
+    if not thermostat:
+        _hide_thermostat(definition)
+    return definition
+
+
+#: what is about the thermal controller in the tree of a unit (hidden in the applications which have none)
+THERMOSTAT_GROUPS = ('thermostat', 'plot_temperature', 'ramp')
+THERMOSTAT_RECORD = ('temperature',)
+THERMOSTAT_STATUS = ('phase', 'cycle', 'setpoint', 'temperature')
+
+
+def _hide_thermostat(definition: dict):
+    """No thermal controller in this application: its settings are not shown"""
+    for child in definition['children']:
+        if child['name'] in THERMOSTAT_GROUPS:
+            child['visible'] = False
+        elif child['name'] == 'record':
+            for leaf in child['children']:
+                if leaf['name'] in THERMOSTAT_RECORD:
+                    leaf['visible'] = False
+                    leaf['value'] = False
+        elif child['name'] == 'status':
+            for leaf in child['children']:
+                if leaf['name'] in THERMOSTAT_STATUS:
+                    leaf['visible'] = False
+
+
+def _unit_definition(number: int, rois: Sequence[Roi], enabled: bool, kind: str, control: str) -> dict:
     cam = kind == CAMERA
     what = 'camera' if cam else 'spectrometer'
     return {'title': 'Camera:' if cam else f'Spectrometer {number}:', 'name': f'unit{number}', 'type': 'group',
@@ -98,10 +140,19 @@ def unit_definition(number: int, rois: Sequence[Roi], enabled: bool = True, kind
                 f'module of the {what} averages: its Naverage)'},
         {'title': 'Record to disk:', 'name': 'record', 'type': 'group', 'children': [
             {'title': 'The full image:', 'name': 'image', 'type': 'bool', 'value': False,
-             'tip': 'Save the whole image at each measurement (a lot of data: a camera gives megabytes)'}
+             'tip': 'Save the whole image (a lot of data: a camera gives megabytes), every "Full image every" seconds'}
             if cam else
             {'title': 'The full spectrum:', 'name': 'spectrum', 'type': 'bool', 'value': True,
-             'tip': 'Save the whole spectrum at each measurement'},
+             'tip': 'Save the whole spectrum, every "Full spectrum every" seconds'},
+            {'title': 'Full image every:', 'name': 'image_interval', 'type': 'float', 'value': 60.0, 'min': 0.0,
+             'suffix': 's', 'tip': 'Only if "The full image" is ticked (it is not by default: an image is megabytes, '
+                                   'two days of one every minute are gigabytes). The ROIs and the temperature are '
+                                   'saved at each measurement, the whole image only this often (0: at each '
+                                   'measurement). A long log of a camera needs it large'}
+            if cam else
+            {'title': 'Full spectrum every:', 'name': 'spectrum_interval', 'type': 'float', 'value': 0.0, 'min': 0.0,
+             'suffix': 's', 'tip': 'The ROIs and the temperature are saved at each measurement, the whole spectrum '
+                                   'only this often (0: at each measurement)'},
             {'title': 'The temperature:', 'name': 'temperature', 'type': 'bool', 'value': True,
              'tip': 'Save the measured temperature (and the set-point, the cycle and the phase of the ramp) '
                     'at each measurement'},
@@ -120,9 +171,14 @@ def unit_definition(number: int, rois: Sequence[Roi], enabled: bool = True, kind
                      'the next experiment as soon as they change'},
          ] + [(rect_roi_definition if cam else roi_definition)(f'roi{index:02d}', roi)
               for index, roi in enumerate(rois)]},
-        {'title': 'Temperature ramp:', 'name': 'ramp', 'type': 'group', 'children': [
-            {'title': 'Run the ramp:', 'name': 'run', 'type': 'bool', 'value': True,
-             'tip': 'Untick to only record this unit, without driving its thermostat'},
+        {'title': 'Thermal controller:', 'name': 'ramp', 'type': 'group', 'children': [
+            {'title': 'Drive it:', 'name': 'run', 'type': 'bool', 'value': True,
+             'tip': 'Untick to only record this unit (the temperature of its thermostat), without driving the thermostat'},
+            {'title': 'Mode:', 'name': 'control', 'type': 'list', 'limits': [CONTROL_HOLD, CONTROL_RAMP],
+             'value': control,
+             'tip': 'Hold the thermal controller at one temperature, or run a temperature ramp'},
+            {'title': 'Temperature:', 'name': 'hold_temperature', 'type': 'float', 'value': 25.0,
+             'tip': 'The temperature the thermal controller is set to when the log starts, and held at until it stops'},
             {'title': 'Defined by:', 'name': 'mode', 'type': 'list', 'limits': [mode.value for mode in RampMode],
              'value': RampMode.VELOCITY.value,
              'tip': 'Three of the four numbers define the ramp, the fourth one is computed (and read-only)'},
@@ -244,7 +300,27 @@ class UnitSettings:
 
     @property
     def run_ramp(self) -> bool:
+        """The unit drives its thermostat (it holds it at a temperature or runs a ramp), else it only records"""
         return bool(self.param['ramp', 'run'])
+
+    @property
+    def control(self) -> str:
+        """What the thermal controller does: :data:`CONTROL_HOLD` or :data:`CONTROL_RAMP`"""
+        return str(self.param['ramp', 'control'])
+
+    @property
+    def holds(self) -> bool:
+        """The thermal controller is held at one temperature (and not run through a ramp)"""
+        return self.control == CONTROL_HOLD
+
+    @property
+    def hold_temperature(self) -> float:
+        return float(self.param['ramp', 'hold_temperature'])
+
+    @property
+    def full_interval(self) -> float:
+        """s, how often the whole spectrum (image) is saved: 0 for each measurement"""
+        return max(0.0, float(self.param['record', 'image_interval' if self.KIND == CAMERA else 'spectrum_interval']))
 
     def set_modules(self, spectrometers: Sequence[str], thermostats: Sequence[str],
                     spectrometer: Optional[str] = None, thermostat: Optional[str] = None):
@@ -427,6 +503,36 @@ class UnitSettings:
                     if back_mode != BackMode.DURATION:
                         ramp.child('back_duration').setValue(float(span / computed))
             ramp.child('cycle_duration').setValue(self.describe_program())
+            self._show_fields()
+
+    def hide_unused(self, thermostat: bool = True):
+        """Hide again what is not used: the search box of the settings shows every parameter when it is emptied
+
+        Parameters
+        ----------
+        thermostat: bool
+            False for an application without thermal controller (all that is about it is hidden), True: only the
+            fields of the ramp or of the hold which do not apply are hidden
+        """
+        with self.busy():
+            if thermostat:
+                self._show_fields()
+                return
+            for name in THERMOSTAT_GROUPS:
+                self.param.child(name).setOpts(visible=False)
+            for group, names in (('record', THERMOSTAT_RECORD), ('status', THERMOSTAT_STATUS)):
+                for name in names:
+                    self.param.child(group, name).setOpts(visible=False)
+
+    def _show_fields(self):
+        """A unit which does not drive its thermostat shows nothing of it; one which holds a temperature shows that
+        temperature, one which runs a ramp shows the ramp"""
+        ramp = self.param.child('ramp')
+        drives, holds = bool(ramp['run']), self.holds
+        ramp.child('control').setOpts(visible=drives)
+        ramp.child('hold_temperature').setOpts(visible=drives and holds)
+        for name in RAMP_FIELDS:
+            ramp.child(name).setOpts(visible=drives and not holds)
 
     def describe_program(self) -> str:
         """How long a cycle lasts (and all the cycles), or why the program is not valid"""
@@ -444,7 +550,7 @@ class UnitSettings:
         """Show the units of the thermostat in the fields of the ramp and of the status"""
         suffix = f' {units}' if units else ''
         with self.busy():
-            for name in ('initial', 'final'):
+            for name in ('initial', 'final', 'hold_temperature'):
                 self.param.child('ramp', name).setOpts(suffix=units)
             for name in ('velocity', 'back_velocity'):
                 self.param.child('ramp', name).setOpts(suffix=f'{units}/min' if units else '/min')

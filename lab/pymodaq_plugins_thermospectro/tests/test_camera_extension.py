@@ -146,6 +146,7 @@ class TestCameraWithSpectrometers:
         ext.unit(2).settings.child('enabled').setValue(False)
         ext.unit(1).settings.child('enabled').setValue(False)
         ext.unit(CAMERA).settings.child('record', 'image').setValue(True)
+        ext.unit(CAMERA).settings.child('record', 'image_interval').setValue(0.)  # (an image at each readout)
         ext.unit(CAMERA).settings.child('ramp', 'run').setValue(True)
 
         run(qtbot, ext)

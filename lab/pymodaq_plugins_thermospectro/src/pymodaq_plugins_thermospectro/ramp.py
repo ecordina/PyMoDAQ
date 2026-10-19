@@ -33,6 +33,7 @@ class Phase(str, Enum):
     HOLD_INITIAL = 'hold initial'
     RETURN = 'return'  # controlled return to the initial value after a stop or an error
     DONE = 'done'
+    HOLD = 'hold'  # the thermal controller is held at one temperature (no ramp)
 
 
 #: Phases are saved as integers, this is the code of each of them

@@ -8,6 +8,7 @@ deleted.
 """
 from __future__ import annotations
 
+import numpy as np
 from qtpy import QtCore, QtWidgets
 
 from pymodaq_gui.utils import Dock
@@ -213,13 +214,32 @@ class UnitView(QtCore.QObject):
             return
         self._marker = marker
         series = unit.series_rois
-        rows = series.last_rows(span)
+        rows = self._thinned(series.last_rows(span))
         self.curves_plot.set_data(series.t[rows] / 60., [series.column(index)[rows] for index in self._plotted])
         if self.curves_plot.secondary_curves:
             series = unit.series_temperature
-            rows = series.last_rows(span)
+            rows = self._thinned(series.last_rows(span))
             self.curves_plot.set_secondary_data(series.t[rows] / 60.,
                                                 [series.column(0)[rows], series.column(1)[rows]])
+
+    #: A plot of days of data does not need more points than a screen has pixels: the plot is thinned beyond this many
+    MAX_POINTS = 20000
+
+    @classmethod
+    def _thinned(cls, rows: slice):
+        """The rows to draw: every n-th row of a slice, n so that no more than :data:`MAX_POINTS` are drawn (the file
+        has them all), and always the last one
+
+        The rows are multiples of n, so that the points of a curve which grows do not jump from a refresh to the next.
+        """
+        count = rows.stop - rows.start
+        step = -(-count // cls.MAX_POINTS)  # (rounded up)
+        if step <= 1:
+            return rows
+        indexes = np.arange(-(-rows.start // step) * step, rows.stop, step)
+        if indexes.size == 0 or indexes[-1] != rows.stop - 1:
+            indexes = np.append(indexes, rows.stop - 1)
+        return indexes
 
 
 class CameraView(UnitView):

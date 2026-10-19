@@ -179,7 +179,8 @@ class TestCameraSettings:
         assert param.child('camera').title() == 'Camera:'
         assert param.child('integration_time').title() == 'Exposure time:'
         assert not param.child('record', 'image').value()  # (an image is large: not by default)
-        assert [child.name() for child in param.child('record').children()] == ['image', 'temperature']
+        assert [child.name() for child in param.child('record').children()] == ['image', 'image_interval', 'temperature']
+        assert param.child('record', 'image_interval').value() == 60.0  # (a long log saves the image now and then)
         assert not hasattr(param.child('record'), 'spectrum') and 'spectrum' not in param.child('record').names
         assert settings.roi_keys == ['roi00', 'roi01', 'roi02', 'roi03']
 

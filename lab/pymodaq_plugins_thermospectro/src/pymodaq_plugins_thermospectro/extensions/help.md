@@ -1,36 +1,33 @@
 # ThermoSpectro
 
-ThermoSpectro records one or two spectrometers and a camera, each with a **thermostat**, while the temperature of
-the thermostat follows a ramp: up to a final value, a wait, back to the initial value, a wait, as many times as asked.
+Five applications record spectrometers and a camera while a thermal controller **holds a temperature** or **runs a
+ramp**. The command which started this one (`thermo_2spectro`, `thermo_spectro`, `camera`, `thermo_camera`,
+`thermo_camera_spectro`) gave it the settings and the windows of its instruments and nothing else.
 
-Each detector and its thermostat make a *unit*: they have their own settings (*Spectrometer 1*, *Spectrometer 2* and
-*Camera* in the settings tree), their own plots, their own ramp. The camera is the third unit: a 2D detector of the
-Dashboard (a Thorlabs camera, for instance). It can have a thermostat of its own, or **share the one of a
-spectrometer**: one unit then drives it (*Run the ramp*) and the other only records its temperature. The presets
-`ThermoCamera...` start with a camera and a thermostat, `ThermoCameraSpectro...` with a camera, a spectrometer and one
-thermostat (see the README).
+Each detector and its thermal controller make a *unit* (*Spectrometer 1*, *Spectrometer 2* and *Camera* in the settings
+tree): their own settings, plots and temperature mode. A camera and a spectrometer can **share one thermal controller**:
+one unit drives it (*Drive it*), the other only records its temperature.
 
 ## Typical workflow
 
-1. Start the extension with the command `thermospectro`: the Dashboard loads a preset with the spectrometers (1D
-   detectors) and the thermostats (actuators whose position is the temperature), and this extension opens. (Or load a
-   preset by hand in *Tools > Experiment > Load Experiments* and open the extension in *Tools > Extensions*.)
-   **Nothing is connected when a preset opens**: when the spectrometers and the thermostats are plugged in, click
-   **Connect the modules** (the plug button of the toolbar): they are connected (initialized) one after the other, and
-   the ones which could not be are told at the end (the *Ini* button of each module in the Dashboard does it one by
-   one). The first 1D detector is spectrometer 1, the second one spectrometer 2;
-   the thermostat is guessed from its name (*Thermostat1*, *Temperature*...). A spectrometer which is not in the preset
-   leaves its unit unticked (*Use it*): `thermospectro ThermoSpectroSingleSeabreeze` (or `ThermoSpectroSingleMock`,
-   without hardware) starts with a single unit.
-2. Click **Live** (camera): each spectrometer is read out once per **readout time** (1 s by default), after the
-   **integration time** (500 ms by default) was set on it, and the temperature is read at the same time. The
-   readout time must be longer than the integration time, times the *Naverage* of the spectrometer module if it
-   averages spectra.
-3. Choose the **ROIs** (see below), then set the **temperature ramp** of each unit.
-4. Tick what is recorded to disk, choose the folder in the *Saving* tab and click **Start**.
-5. **Pause** freezes the set-points (the recording goes on), **Stop** brings every thermostat back to its initial
-   value before the experiment ends (a second Stop offers to stop right there). The experiment also ends by itself
-   when all the ramps are over.
+1. The command looked for the instruments connected to the computer, connected the ones it recognized and told which it did
+   not (a message, and the status bar). For one which was **not recognized**, select it in the settings of its module in the
+   Dashboard window (for a thermal controller, its port, *COM6* for instance, in *Port* or *Other port*), then click the
+   *Ini* button of the module, or **Connect the modules** (the plug button of the toolbar here). **Nothing is acquired
+   until you press Start.**
+2. Click **Live** (optional): each instrument is read out once per **readout time** (1 s by default), after its
+   **integration time** (**exposure time**) was set on it, and the temperature is read at the same time. The readout time
+   must be longer than the integration time, times the *Naverage* of the module if it averages. Use it to set the ROIs.
+3. For each thermal controller choose its **Mode**: *Hold at a temperature* (and the temperature) or *Run a ramp*.
+4. Under *Experiment*, **Log for**: *Until I stop it* or *For a given time* (and its **Duration** in hours: 48 for two
+   days). Tick what is recorded to disk, choose the folder in the *Saving* tab.
+5. Click **Start**: everything is recorded until **Stop**, or the end of the duration. The status bar shows the time
+   elapsed and left.
+6. **Stop**: a controller **held at a temperature stays at it** and the log ends at once; a **ramp** is brought back to its
+   initial value (a second Stop offers to stop right there), then the log ends (with one unit on a ramp and another
+   holding a temperature, Stop brings the ramp back, then ends the log: the held controller stays). **Pause** freezes the
+   set-point of a ramp. A log with only ramps ends by itself when they are over; a log which holds a temperature ends at
+   Stop or when its duration is over.
 
 ## The ROIs
 
@@ -56,9 +53,15 @@ is plain json: it can be copied to another computer.
 Each ROI has two boxes: **Record** (its value is saved in the file) and **Plot** (it is drawn). They are
 independent. The buttons above the plot of the ROIs do the same as *Plot*.
 
-## The temperature ramp
+## Hold at a temperature, or a ramp
 
-A ramp goes from the *initial value* to the *final value* (above or below). Three of these four numbers define it,
+**Hold at a temperature**: the temperature is sent to the thermal controller when the log starts (it switches its
+temperature control on and goes there); it is the controller which holds it, nothing is sent again, and it stays at it when
+the log ends. The file records it as the set-point, with the phase `hold`. A temperature (or a ramp) which is **out of the
+range of the controller** (its *Bounds* in the module's settings, which QNW_TC fills with the range of its holder) is
+**refused when you press Start**, so that a typo (400 for 40) does not leave a two day log with a controller doing nothing.
+
+**Run a ramp**: it goes from the *initial value* to the *final value* (above or below). Three of these four numbers define it,
 the fourth one is computed and shown (read-only); choose which in **Defined by**:
 
 * initial value, final value, velocity
@@ -69,7 +72,7 @@ Then the temperature **waits at the final value**, **goes back to the initial va
 same velocity as the way there, another velocity, or a duration) and **waits at the initial value**. The cycle is
 repeated *Number of cycles* times (0: until Stop). If the thermostat does not start at the initial value, it is
 brought there first. The ramps of the two units are independent (different values, speeds, number of cycles). Untick
-*Run the ramp* to only record a unit, without driving its thermostat.
+*Drive it* to only record a unit, without driving its thermal controller.
 
 The thermostat is given a new set-point every second (*Set-point every*), so any thermostat with a PyMoDAQ plugin can
 be used, whatever its own ramping capabilities. Protect it with the bounds of its actuator (*Set bounds* in the
@@ -87,8 +90,8 @@ the same ones), which are fitted to the size of the image when the first image c
   rectangle to delete it;
 * the **ROI manager** has a table for the camera too: the name and the four edges of each rectangle, in pixels
   (*x from*, *x to*: the columns, *y from*, *y to*: the rows, the first row being the top one);
-* the full image is **not recorded by default** (it is megabytes at each readout): tick *The full image* under
-  *Record to disk* to save it (`Unit3_Image`). The ROIs and the temperature are recorded as for a spectrometer
+* the full image is **not recorded by default** (it is megabytes): tick *The full image* under *Record to disk* to save
+  it (`Unit3_Image`) and say how often with **Full image every** (60 s by default; 0: at each readout). The ROIs and the temperature are recorded as for a spectrometer
   (`Unit3_ROIs`, `Unit3_Temperature`, `Unit3_Program`).
 
 ## The plots
@@ -99,6 +102,9 @@ window, plots, settings and saving, can be **closed at any time and opened again
 last* limits how much of the time axis is drawn.
 
 ## What is recorded
+
+Each readout saves the ROIs and the temperature; the **whole spectrum** (image) only every *Full spectrum every* (*Full image
+every*) seconds, which keeps a long log small (0: at each readout).
 
 Independently of each other, per unit: **the full spectrum** (the full image of a camera), **each ROI**, **the temperature** (with the set-point,
 the cycle and the phase of the ramp). Untick the *Do logging* button of the toolbar to record nothing at all.
@@ -121,9 +127,11 @@ integration and readout times and, for the ROIs, their windows. The codes of `Un
 
 ## Safety
 
-The thermostats are never left hot on purpose: the set-point of a unit returns to its initial value on Stop, when
-its spectrometer or its thermostat does not deliver anything for the time set in *Stop if no data for* (30 s, and at
-least a few readouts), and when a module is closed. A thermostat which is closed cannot be brought back: the extension
-says so, with its last set-point. When the extension is closed during an experiment, a dialog asks whether to set the
-initial temperatures at once (the proposed answer) or to bring them back gradually; when PyMoDAQ itself is quit, they
-are set at once.
+A **ramp** is never left hot on purpose: its set-point returns to the initial value on Stop, when its spectrometer or its
+thermal controller does not deliver anything for the time set in *Stop if no data for* (30 s, and at least a few readouts),
+and when a module is closed. A controller **held at a temperature** is left where it is when the log ends (that is the
+point of holding it) and is not touched when a module goes silent: the log goes on, tells it, and tells it when the data
+come back (a glitch must not end a log of two days). A thermal controller which is closed cannot be brought back: the
+extension says so, with its last set-point. When the extension is closed during a ramp, a dialog asks whether to set the
+initial temperatures at once (the proposed answer) or to bring them back gradually; when PyMoDAQ itself is quit, they are
+set at once.

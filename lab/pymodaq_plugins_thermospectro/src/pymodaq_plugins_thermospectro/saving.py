@@ -11,7 +11,8 @@ Each one is saved, or not, independently of the others:
 ``Unit1_Temperature``
     the temperature measured by the thermostat at each readout
 ``Unit1_Program``
-    the set-point, the cycle and the phase of the temperature ramp (saved with the temperature, if a ramp is run)
+    the set-point, the cycle and the phase of the temperature ramp (saved with the temperature, if a ramp is run, or
+    the temperature held: the phase is then ``hold``)
 
 All the arrays of a unit are enlarged along a time axis made of the time (epoch seconds) at which each readout
 started: the same for the four groups of a unit.
@@ -155,7 +156,7 @@ class UnitRecording:
         thermostat = unit.thermostat
         return cls(number=unit.number, spectrum=settings.record_spectrum and unit.detector is not None,
                    temperature=settings.record_temperature and thermostat is not None,
-                   program=unit.has_program, rois=[replace(rois[i], name=names[i]) for i in indices],
+                   program=unit.has_program or unit.has_hold, rois=[replace(rois[i], name=names[i]) for i in indices],
                    roi_indices=indices, settings=copy,
                    detector_settings=unit.detector.settings if unit.detector is not None else None,
                    thermostat_settings=thermostat.settings if thermostat is not None else None,
@@ -192,7 +193,7 @@ def build_dtes(recording: UnitRecording, measurement) -> list[DataToExport]:
     """
     number = recording.number
     dtes = []
-    if recording.spectrum:
+    if recording.spectrum and measurement.full_due:  # (in a long log the whole spectrum or image is saved now and then)
         title = group_title(number, recording.main)
         spectrum = measurement.spectrum
         dwa = spectrum.dwa.deepcopy()

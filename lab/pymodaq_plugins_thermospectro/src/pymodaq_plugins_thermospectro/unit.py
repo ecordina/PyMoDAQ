@@ -90,6 +90,8 @@ class Measurement:
         The phase of the ramp (None if there is no ramp running)
     cycle: int
         The cycle of the ramp (0 if there is no ramp running)
+    full_due: bool
+        The whole spectrum (image) is to be saved with this measurement (it is saved only every so often in a long log)
     """
     unit: int
     index: int
@@ -101,6 +103,7 @@ class Measurement:
     setpoint: float = math.nan
     phase: Optional[Phase] = None
     cycle: int = 0
+    full_due: bool = True
 
 
 class Unit(QtCore.QObject):
@@ -157,6 +160,8 @@ class Unit(QtCore.QObject):
         self.program: Optional[RampProgram] = None
         self.runner: Optional[RampRunner] = None
         self.ramp_state: Optional[RampState] = None
+        self.hold_target: Optional[float] = None  # the temperature the thermal controller is held at (a run)
+        self._last_full = -math.inf  # when the whole spectrum (image) was last saved (time.monotonic())
         self.last_sent: Optional[float] = None
         self.failed = False  # the spectrometer is not read out any more
         self.clock = time.perf_counter  # the clock of the ramp (replaced in the tests)
@@ -213,8 +218,18 @@ class Unit(QtCore.QObject):
 
     @property
     def has_program(self) -> bool:
-        """The unit drives its thermostat: the user asked for a ramp and there is a thermostat"""
-        return self.settings.run_ramp and self.thermostat is not None
+        """The unit runs a temperature ramp: the user asked for it and there is a thermostat"""
+        return self.settings.run_ramp and self.thermostat is not None and not self.settings.holds
+
+    @property
+    def drives(self) -> bool:
+        """The unit drives its thermostat (a ramp, or a held temperature)"""
+        return self.has_program or self.has_hold
+
+    @property
+    def has_hold(self) -> bool:
+        """The unit holds its thermostat at one temperature: the user asked for it and there is a thermostat"""
+        return self.settings.run_ramp and self.thermostat is not None and self.settings.holds
 
     @property
     def program_over(self) -> bool:
@@ -246,7 +261,49 @@ class Unit(QtCore.QObject):
                 settings.program()
             except ValueError as e:
                 problems.append(f'{label}: the temperature ramp is not valid: {e}')
+        if self.has_hold and not math.isfinite(settings.hold_temperature):
+            problems.append(f'{label}: the temperature to hold is not a number')
         return problems
+
+    def thermostat_range(self) -> Optional[tuple[float, float]]:
+        """The lowest and the highest temperature the thermostat accepts, None if it is not known
+
+        It is the *Bounds* of the actuator module when they are set, or when they are not the ones of an actuator which
+        was never given any (0 to 1): a plugin which knows the range of its controller writes it there (QNW_TC does).
+        """
+        try:
+            group = self.thermostat.settings.child(getattr(self.thermostat, '_hw_settings_name', 'move_settings'),
+                                                   'bounds')
+            low, high = float(group['min_bound']), float(group['max_bound'])
+            if group['is_bounds'] or (low, high) != (0., 1.):
+                return low, high
+        except Exception:  # (a module without bounds: the controller will say)
+            pass
+        return None
+
+    def run_problems(self) -> list[str]:
+        """What prevents the unit from starting an experiment, besides what prevents it from being read out: a
+        temperature which the thermostat refuses (it would be refused again at every set-point, and the log would carry
+        on as if all was well)"""
+        if not self.drives or self.thermostat is None:
+            return []
+        limits = self.thermostat_range()
+        if limits is None:
+            return []
+        low, high = limits
+        wanted = {}
+        if self.has_hold:
+            wanted['the temperature to hold'] = self.settings.hold_temperature
+        if self.has_program:
+            try:
+                program = self.settings.program()
+            except ValueError:
+                return []  # (problems() says it)
+            wanted['the initial temperature of the ramp'] = program.initial
+            wanted['the final temperature of the ramp'] = program.final
+        return [f'{self.label}: {what} ({value:g} {self.units}) is out of the range of {self.thermostat.title}: '
+                f'{low:g} to {high:g} {self.units}' for what, value in wanted.items()
+                if math.isfinite(value) and not low <= value <= high]
 
     def n_averages(self) -> int:
         """How many spectra the spectrometer averages for one readout (the *Naverage* of its module)"""
@@ -394,6 +451,8 @@ class Unit(QtCore.QObject):
     def _on_spectrum(self, dte: DataToExport):
         if not self._store_data(dte):
             return
+        if self.detector is not None:
+            self.recovered(Problem.SPECTROMETER, f'{self.detector.title} delivers data again')
         pending, self._pending = self._pending, None
         if pending is None or self.state == UnitState.IDLE:
             return  # a spectrum nobody asked for (the module was grabbing on its own): shown, not measured
@@ -437,6 +496,8 @@ class Unit(QtCore.QObject):
             logger.warning(f'The thermostat gave a temperature of {number}')
             return
         self.temperature = Reading(number, time.monotonic())
+        if self.thermostat is not None:
+            self.recovered(Problem.THERMOSTAT_SILENT, f'{self.thermostat.title} gives its temperature again')
 
     def _roi_values(self, rois: list[Roi]) -> list[float]:
         values = []
@@ -460,13 +521,21 @@ class Unit(QtCore.QObject):
         return reading.value
 
     def _measure(self, started: float):
+        started_monotonic = time.monotonic()
         rois = self.settings.rois
         values = self._roi_values(rois)
         temperature = self.current_temperature()
         state = self.ramp_state if self.state == UnitState.RUNNING else None
+        setpoint, phase, cycle = (state.setpoint, state.phase, state.cycle) if state is not None \
+            else (math.nan, None, 0)
+        if state is None and self.state == UnitState.RUNNING and self.hold_target is not None:
+            setpoint, phase = self.hold_target, Phase.HOLD  # (held at one temperature)
+        interval = self.settings.full_interval
+        full_due = interval <= 0 or started_monotonic - self._last_full >= interval - 1e-6
+        if full_due:
+            self._last_full = started_monotonic
         measurement = Measurement(self.number, self.n_measurements, started, self.spectrum, rois, values, temperature,
-                                  state.setpoint if state is not None else math.nan,
-                                  state.phase if state is not None else None, state.cycle if state is not None else 0)
+                                  setpoint, phase, cycle, full_due)
         self.n_measurements += 1
         if len(values) == self.series_rois.n_columns:
             self.series_rois.append(started - self.origin, values)
@@ -528,14 +597,27 @@ class Unit(QtCore.QObject):
         self._last_phase = None
         self.program = None
         self._reported.clear()
+        if self.failed:  # (a module which did not answer during the live view: the experiment tries it again)
+            self.failed = False
+            self.update_timing()
+            self._readout()
         # (a readout in progress is not dropped: there is never more than one: its spectrum is displayed, but it is
         # not part of the experiment, see _on_spectrum)
         self._started_at = self._run_started = time.monotonic()
+        self._last_full = -math.inf  # (the first measurement has the whole spectrum)
+        self.hold_target = None
         if self.has_program:
             self.program = self.settings.program()
             self.runner = RampRunner(self.program)
             self.ramp_state = self.runner.begin(now, self.temperature.value)
         self.state = UnitState.RUNNING
+        if self.has_hold:
+            self.hold_target = self.settings.hold_temperature
+            self.send_setpoint(self.hold_target)
+            logger.info(f'{self.label}: {self.thermostat.title} is held at {self.hold_target:g} {self.units}')
+            self.notice.emit(f'{self.label}: held at {self.hold_target:g} {self.units}')
+            self.settings.child('status', 'phase').setValue(Phase.HOLD.value)
+            self.settings.child('status', 'setpoint').setValue(float(self.hold_target))
         self.program_tick(now)
 
     def end_run(self):
@@ -544,6 +626,7 @@ class Unit(QtCore.QObject):
             self.state = UnitState.LIVE
         self.runner = None
         self.ramp_state = None
+        self.hold_target = None
         self.settings.child('status', 'phase').setValue(Phase.IDLE.value)
 
     def send_setpoint(self, value: float):
@@ -620,8 +703,12 @@ class Unit(QtCore.QObject):
     # ----------------------------------------------------------------------------------------------------------
     # when something goes wrong
     # ----------------------------------------------------------------------------------------------------------
-    def fail(self, kind: Problem, message: str):
-        """A module does not work: do what can be done for the thermostat, and say it (once per kind)"""
+    def fail(self, kind: Problem, message: str, halt: bool = True):
+        """A module does not work: do what can be done for the thermostat, and say it (once per kind)
+
+        A spectrometer (camera) which does not answer is not read out any more, unless `halt` is False: a log which
+        holds a temperature goes on asking, and takes the data again when they come back (see :meth:`recovered`).
+        """
         kind = Problem(kind)
         if kind in self._reported:
             return
@@ -634,7 +721,7 @@ class Unit(QtCore.QObject):
             self.thermostat = None
             self.temperature = None
         else:
-            if kind == Problem.SPECTROMETER:
+            if kind == Problem.SPECTROMETER and halt:
                 self.halt_readouts()
             if self.runner is not None and self.runner.mode == 'cycling':
                 self.stop_program(self.clock(), reason=message)  # first the safety action, whatever happens to the message
@@ -649,6 +736,10 @@ class Unit(QtCore.QObject):
         if self.thermostat is not None and Problem.THERMOSTAT_SILENT not in self._reported:
             last = self.temperature.time if self.temperature is not None else self._started_at
             if now - last > limit:
+                if self.runner is None:  # (held at a temperature, or only read: the controller goes on by itself)
+                    return (Problem.THERMOSTAT_SILENT,
+                            f'No temperature from {self.thermostat.title} for {limit:g} s: the log goes on, and '
+                            'the controller keeps its set-point')
                 return (Problem.THERMOSTAT_SILENT,
                         f'No temperature from {self.thermostat.title} for {limit:g} s: the set-point is brought '
                         'back to the initial value, but the thermostat does not answer: nothing says that it gets it')
@@ -658,6 +749,13 @@ class Unit(QtCore.QObject):
                 return Problem.SPECTROMETER, f'No {self.DATA} from {self.detector.title} for {limit:g} s'
         return None
 
+    def recovered(self, kind: Problem, message: str):
+        """A module which was said not to answer delivers again: say so, the problem can be told again later"""
+        if kind in self._reported and not (kind == Problem.SPECTROMETER and self.failed):
+            self._reported.discard(kind)
+            logger.info(f'{self.label}: {message}')
+            self.notice.emit(f'{self.label}: {message}')
+
     def live_notices(self, now: float) -> list[str]:
         """Tell once, after a few seconds, that a module of the live view delivers nothing usable"""
         if self.state != UnitState.LIVE or now - self._started_at < self.SILENCE_NOTICE:
@@ -665,7 +763,8 @@ class Unit(QtCore.QObject):
         messages = []
         if self.spectrum is None and 'spectrum' not in self._silent:
             self._silent.add('spectrum')
-            messages.append(f'{self.title} has delivered no {self.DIMENSION} data ({'an' if self.DATA[0] in 'aeiou' else 'a'} {self.DATA})')
+            article = 'an' if self.DATA[0] in 'aeiou' else 'a'
+            messages.append(f'{self.title} has delivered no {self.DIMENSION} data ({article} {self.DATA})')
         if self.thermostat is not None and self.temperature is None and 'temperature' not in self._silent:
             self._silent.add('temperature')
             messages.append(f'{self.thermostat.title} has not given its temperature')
@@ -679,6 +778,8 @@ class Unit(QtCore.QObject):
     def status_text(self) -> str:
         """A line for the status bar"""
         text = self.label
+        if self.hold_target is not None:
+            text += f': held at {self.hold_target:.4g} {self.units}'
         state = self.ramp_state
         if state is not None and self.program is not None:
             total = self.program.n_cycles or '∞'
