@@ -18,28 +18,52 @@ def names(steps):
 
 class TestCommands:
     def test_the_three_plugins_are_installed_editable(self, tmp_path):
-        steps = install_lab.commands(root=tmp_path, have_pymodaq=True)
+        steps = install_lab.commands(root=tmp_path, have_pymodaq=True, have_qt=True)
 
         assert names(steps) == [f'install --no-build-isolation -e {tmp_path / "pymodaq_plugins_oceaninsight"}',
                                 f'install -e {tmp_path / "pymodaq_plugins_quantumnorthwest"}',
                                 f'install -e {tmp_path / "pymodaq_plugins_thermospectro"}']
         assert all(step[:3] == [sys.executable, '-m', 'pip'] for step in steps)
 
-    def test_pymodaq_is_installed_first_if_it_is_missing(self, tmp_path):
+    def test_pymodaq_is_installed_first_with_a_qt_binding_if_it_is_missing(self, tmp_path):
         steps = install_lab.commands(root=tmp_path, have_pymodaq=False)
 
-        assert names(steps)[0] == 'install pymodaq>=5.3,<5.4' and len(steps) == 4
+        assert names(steps)[0] == 'install pymodaq[pyqt6]>=5.3,<5.4' and len(steps) == 4  # (PyMoDAQ alone has no Qt)
+
+    def test_another_qt_binding_can_be_chosen(self, tmp_path):
+        steps = install_lab.commands(root=tmp_path, have_pymodaq=False, qt='pyside6')
+
+        assert names(steps)[0] == 'install pymodaq[pyside6]>=5.3,<5.4'
+
+    def test_a_qt_binding_is_added_to_a_pymodaq_which_has_none(self, tmp_path):
+        steps = install_lab.commands(root=tmp_path, have_pymodaq=True, have_qt=False)
+
+        assert names(steps)[0] == 'install PyQt6' and len(steps) == 4
+
+    def test_a_pymodaq_with_its_qt_binding_is_left_alone(self, tmp_path):
+        steps = install_lab.commands(root=tmp_path, have_pymodaq=True, have_qt=True)
+
+        assert len(steps) == 3 and not any('PyQt6' in text or 'pymodaq' in text.split(' -e ')[0] for text in names(steps))
 
     def test_pymodaq_is_left_alone_if_it_is_not_wanted(self, tmp_path):
-        steps = install_lab.commands(pymodaq=False, root=tmp_path, have_pymodaq=False)
+        steps = install_lab.commands(pymodaq=False, root=tmp_path, have_pymodaq=False, have_qt=False)
 
-        assert len(steps) == 3 and not any('pymodaq>=' in text for text in names(steps))
+        assert len(steps) == 3 and not any('pymodaq[' in text or 'PyQt6' in text for text in names(steps))
 
     def test_the_camera_and_the_usb_packages_come_before_the_plugins(self, tmp_path):
-        steps = names(install_lab.commands(camera=True, usb=True, root=tmp_path, have_pymodaq=True))
+        steps = names(install_lab.commands(camera=True, usb=True, root=tmp_path, have_pymodaq=True, have_qt=True))
 
         assert steps[0] == 'install pymodaq_plugins_thorlabs tifffile libusb-package pyusb'
         assert steps[1].startswith('install --no-build-isolation -e')
+
+    def test_a_binding_is_found_by_the_name_of_its_module(self, monkeypatch):
+        monkeypatch.setattr(install_lab, 'installed', lambda module: module == 'PySide6')
+
+        assert install_lab.has_qt_binding() is True
+
+        monkeypatch.setattr(install_lab, 'installed', lambda module: False)
+
+        assert install_lab.has_qt_binding() is False
 
     def test_the_plugins_of_the_repository_are_all_there(self):
         for plugin in install_lab.PLUGINS:

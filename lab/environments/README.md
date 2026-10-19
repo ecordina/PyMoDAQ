@@ -17,8 +17,9 @@ how a computer gets its updates (`git pull`, then the same command if a dependen
 What the two computers had changed in their installed plugins is now part of the plugins of this repository:
 
 * PC 1: `pymodaq_plugins_oceaninsight/hardware/seabreeze_utils.py` opens the USB devices one at a time (two spectrometers
-  connected together corrupted each other's answers), and `libusb_fix.pth` (the DLL folder of `libusb-package` and the
-  pyseabreeze backend) is done by the plugin itself on Windows (`prepare_usb`), nothing is to be put in `site-packages`.
+  connected together corrupted each other's answers), and `libusb_fix.pth` (the DLL folder of `libusb-package`) is done by
+  the plugin itself on Windows (`prepare_usb`), nothing is to be put in `site-packages`. (The `SEABREEZE_BACKEND` variable
+  which that file also set is not read by python-seabreeze: the plugin chooses the backend of each spectrometer itself.)
 * PC 2: the image of the camera in ThermoSpectro is shown by the image viewer of PyMoDAQ (colour channels, histogram,
   levels...), and the launchers `lab/windows/zelux.bat` and `zeluxspec.bat` start the presets `ThermoZeluxMockThermo` and
   `ThermoZeluxMockSpectroMockThermo` (these presets were rebuilt from the names in the launchers: the PC's own files were not

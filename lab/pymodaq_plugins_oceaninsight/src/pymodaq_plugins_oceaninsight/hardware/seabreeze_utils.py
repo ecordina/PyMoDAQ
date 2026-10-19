@@ -68,10 +68,10 @@ def prepare_usb() -> Optional[str]:
     """ Make the libusb library of the ``libusb-package`` package usable by pyusb, on Windows
 
     pyseabreeze talks to the spectrometers through pyusb, which needs the libusb DLL. ``pip install libusb-package``
-    brings one: its folder is added to the places where Windows looks for DLLs (and to the PATH), and the backend of
-    python-seabreeze is the pure python one unless the environment variable ``SEABREEZE_BACKEND`` says otherwise (the
-    compiled one needs the driver of Ocean Optics, which is not the one of libusb). Nothing is done on the other systems,
-    or when ``libusb-package`` is not installed. It can be called any number of times.
+    brings one: its folder is added to the places where Windows looks for DLLs (and to the PATH). Nothing is done on the
+    other systems, or when ``libusb-package`` is not installed. It can be called any number of times.
+
+    The backend of a spectrometer is chosen by the plugin (the *Backend* list of its module), not here.
 
     Returns
     -------
@@ -89,7 +89,6 @@ def prepare_usb() -> Optional[str]:
         os.add_dll_directory(folder)
     if folder not in os.environ.get('PATH', '').split(os.pathsep):
         os.environ['PATH'] = folder + os.pathsep + os.environ.get('PATH', '')
-    os.environ.setdefault('SEABREEZE_BACKEND', DEFAULT_BACKEND)
     return folder
 
 

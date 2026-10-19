@@ -14,8 +14,9 @@ The plugins (folders next to this script):
 * ``pymodaq_plugins_quantumnorthwest``: the actuator ``QNW_TC`` (Quantum Northwest TC 125 / TC 1 / TC 1B) and ``qnw_tc_check``;
 * ``pymodaq_plugins_oceaninsight``: the Seabreeze spectrometers (pyseabreeze by default, several spectrometers at once).
 
-PyMoDAQ itself (``pip install pymodaq``, release 5.3) is installed first if the environment does not have it, unless
-``--no-pymodaq`` is given. The pins of the environments of the two computers of the lab are in ``lab/environments``.
+PyMoDAQ itself (release 5.3, with a Qt binding: PyQt6 by default, ``--qt`` chooses another) is installed first if the
+environment does not have it, unless ``--no-pymodaq`` is given; a Qt binding is added if the environment has PyMoDAQ but no
+Qt binding. The pins of the environments of the two computers of the lab are in ``lab/environments``.
 """
 from __future__ import annotations
 
@@ -33,6 +34,9 @@ NO_ISOLATION = ('pymodaq_plugins_oceaninsight',)
 CAMERA_PACKAGES = ('pymodaq_plugins_thorlabs', 'tifffile')
 USB_PACKAGES = ('libusb-package', 'pyusb')
 MINIMUM_PYTHON = (3, 10)
+#: the Qt bindings PyMoDAQ can use: the name of the extra of pymodaq, the python module which says it is installed
+QT_BINDINGS = {'pyqt6': 'PyQt6', 'pyside6': 'PySide6', 'pyqt5': 'PyQt5'}
+PYMODAQ_VERSIONS = '>=5.3,<5.4'
 
 
 def installed(module: str) -> bool:
@@ -44,12 +48,19 @@ def pip(*arguments: str) -> list[str]:
     return [sys.executable, '-m', 'pip', *arguments]
 
 
+def has_qt_binding() -> bool:
+    """Whether one of the Qt bindings PyMoDAQ can use is installed in this environment"""
+    return any(installed(module) for module in QT_BINDINGS.values())
+
+
 def commands(camera: bool = False, usb: bool = False, pymodaq: bool = True, root: Path = HERE,
-             have_pymodaq: Optional[bool] = None) -> list[list[str]]:
+             have_pymodaq: Optional[bool] = None, qt: str = 'pyqt6', have_qt: Optional[bool] = None) -> list[list[str]]:
     """The commands which install what is asked for, in the order they must run"""
     steps = []
     if pymodaq and not (installed('pymodaq') if have_pymodaq is None else have_pymodaq):
-        steps.append(pip('install', 'pymodaq>=5.3,<5.4'))
+        steps.append(pip('install', f'pymodaq[{qt}]{PYMODAQ_VERSIONS}'))  # (PyMoDAQ has no Qt binding without the extra)
+    elif pymodaq and not (has_qt_binding() if have_qt is None else have_qt):
+        steps.append(pip('install', QT_BINDINGS[qt]))
     extras = []
     if camera:
         extras += CAMERA_PACKAGES
@@ -73,7 +84,10 @@ def parse(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
                                 'files of thermospectro_export.py)')
     arguments.add_argument('--usb', action='store_true',
                            help='also install libusb-package and pyusb (the pyseabreeze spectrometers on Windows)')
-    arguments.add_argument('--no-pymodaq', action='store_true', help='do not install PyMoDAQ if it is missing')
+    arguments.add_argument('--no-pymodaq', action='store_true',
+                           help='do not install PyMoDAQ (and a Qt binding) if it is missing')
+    arguments.add_argument('--qt', choices=sorted(QT_BINDINGS), default='pyqt6',
+                           help='the Qt binding to install if there is none (default: pyqt6, the one of the lab)')
     arguments.add_argument('--dry-run', action='store_true', help='only show the commands')
     return arguments.parse_args(argv)
 
@@ -88,7 +102,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if missing:
         print(f'Not found next to this script: {", ".join(missing)}', file=sys.stderr)
         return 1
-    steps = commands(args.camera, args.usb, not args.no_pymodaq)
+    steps = commands(args.camera, args.usb, not args.no_pymodaq, qt=args.qt)
     print(f'Environment: {sys.executable}')
     for step in steps:
         print('  ' + ' '.join(step))

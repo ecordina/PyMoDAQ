@@ -2,7 +2,7 @@
 
 [plugin-info]
 SHORT_PLUGIN_NAME = 'oceaninsight'  #for instance daqmx
-package-url = 'https://github.com/PyMoDAQ/pymodaq_plugins_oceaninsight' #to modify
+package-url = 'https://github.com/ecordina/PyMoDAQ/tree/lab/lab/pymodaq_plugins_oceaninsight'  # the modified copy of the lab
 description = 'Set of PyMoDAQ plugins for OceanInsight (OceanOptics) spectrometers'
 
 author = 'Sébastien Weber'
@@ -11,7 +11,7 @@ license = 'MIT'
 
 [plugin-install]
 #packages required for your plugin:
-packages-required = ['pythonnet','seabreeze>=2.9.0', 'pymodaq>=4.3.0']
+packages-required = ['pythonnet','seabreeze>=2.9.0', 'pymodaq>=5.3.0']
 
 
 [features]  # defines the plugin features contained into this plugin

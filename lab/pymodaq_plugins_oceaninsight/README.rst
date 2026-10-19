@@ -1,10 +1,6 @@
 pymodaq_plugins_oceaninsight (Ocean Insight (Optics) Spectrometers)
 ###################################################################
 
-.. image:: https://img.shields.io/pypi/v/pymodaq_plugins_oceaninsight.svg
-   :target: https://pypi.org/project/pymodaq_plugins_oceaninsight/
-   :alt: Latest Version
-
 .. image:: https://readthedocs.org/projects/pymodaq/badge/?version=latest
    :target: https://pymodaq.readthedocs.io/en/stable/?badge=latest
    :alt: Documentation Status
@@ -13,6 +9,24 @@ pymodaq_plugins_oceaninsight (Ocean Insight (Optics) Spectrometers)
     :target: https://github.com/PyMoDAQ/pymodaq_plugins_oceaninsight
 
 PyMoDAQ plugin for OceanInsight (OceanOptics) spectrometers
+
+Modified version
+================
+
+This is **a modified copy** of the plugin of the PyMoDAQ organisation, https://github.com/PyMoDAQ/pymodaq_plugins_oceaninsight
+(version 1.1.1), kept in the lab repository https://github.com/ecordina/PyMoDAQ (folder ``lab/``). Its version is
+``5.3.0+lab.1`` so that it is never taken for the release of PyPI: **do not use the Update button of the Plugin Manager of
+PyMoDAQ for it**, it would replace this version by the original one. The original MIT license and authors are kept (the
+changes of E. Cordina, 2026, are under the same license). What was changed:
+
+* the python-seabreeze backend (pyseabreeze by default, or cseabreeze) is chosen for each spectrometer in the settings of its
+  module, and the spectrometers are put in a stable order, sorted by serial number (*Auto* device, see below);
+* the electric dark pixels of the detector are not part of the spectra, and the wavelengths are in nm;
+* several spectrometers can be initialized at the same time: the USB devices are opened one at a time (they corrupted each
+  other's answers otherwise);
+* on Windows the libusb DLL of the ``libusb-package`` package is made known to pyusb by the plugin (``prepare_usb``);
+* PyMoDAQ 5.x: the logger and the configuration come from ``pymodaq_utils``, and the tests of the plugin run without
+  spectrometer.
 
 
 Authors

@@ -11,7 +11,7 @@ from pymodaq_plugins_oceaninsight import set_logger
 from pymodaq_plugins_oceaninsight.hardware.seabreeze_utils import (
     AUTO, BACKENDS, DEFAULT_BACKEND, open_spectrometer, prepare_usb, release_backend, active_pixel_slice)
 
-prepare_usb()  # (Windows: the libusb of libusb-package, and pyseabreeze, before python-seabreeze chooses its backend)
+prepare_usb()  # (Windows: the libusb DLL of libusb-package must be known before pyusb looks for it)
 from seabreeze.spectrometers import Spectrometer  # noqa: E402  only to annotate: each spectrometer is bound to its backend
 
 logger = set_logger(Path(__file__).stem)

@@ -69,6 +69,9 @@ class ImagePlot(QtWidgets.QWidget):
         self._locked = False
         self._menu: Optional[QtWidgets.QMenu] = None
         self._user_view = False  # (the user zoomed or panned: the view is not fitted to the widget any more)
+        self._fit_timer = QtCore.QTimer(self)  # (owned by the widget: it is never called after the widget is gone)
+        self._fit_timer.setSingleShot(True)
+        self._fit_timer.timeout.connect(self._fit_if_following)
 
         self.setMinimumHeight(120)
         self.setMinimumWidth(200)
@@ -124,8 +127,9 @@ class ImagePlot(QtWidgets.QWidget):
         if image.ndim != 2 or image.size == 0:
             return
         shape = (int(image.shape[0]), int(image.shape[1]))
-        arrays = [np.asarray(channel) for channel in (channels or [image])[:3]]
-        arrays = [array for array in arrays if array.shape == shape] or [image]
+        # (signed floats: the viewer negates the image on request, which wraps around for the unsigned integers of a camera)
+        arrays = [np.asarray(channel, dtype=np.float32) for channel in (channels or [image])[:3]]
+        arrays = [array for array in arrays if array.shape == shape] or [image.astype(np.float32)]
         names = [str(name) for name in (labels or [])[:len(arrays)]]
         names += [f'channel {index}' for index in range(len(names), len(arrays))]
         self.viewer.show_data(DataRaw('image', data=arrays, labels=names))
@@ -144,16 +148,22 @@ class ImagePlot(QtWidgets.QWidget):
         if self._shape is not None:
             self.getPlotItem().setRange(xRange=(0, self._shape[1]), yRange=(0, self._shape[0]), padding=0.0)
 
+    def _fit_if_following(self):
+        if not self._user_view:
+            self.fit_view()
+
     def eventFilter(self, watched, event):
         # (the plot is resized when the histogram or the lineouts open: the image is not to be cut then)
         if watched is self.image_widget and event.type() == QtCore.QEvent.Type.Resize and not self._user_view:
-            QtCore.QTimer.singleShot(0, lambda: None if self._user_view else self.fit_view())
+            self._fit_timer.start(0)
         return super().eventFilter(watched, event)
 
     def clear_image(self, message: str = 'waiting for data'):
         """Forget the image and tell why there is none"""
         for image_item in self.view.data_displayer.get_images().values():
             image_item.clear()
+        self.viewer._raw_data = None  # (a button of the toolbar would draw the last image again)
+        self.viewer._datas = None
         self._message.setText(message)
         self._message.setVisible(True)
         self._shape = None

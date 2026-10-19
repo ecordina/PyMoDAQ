@@ -2,14 +2,14 @@
 
 This is a fork of [PyMoDAQ](https://github.com/PyMoDAQ/PyMoDAQ) (release branch 5.3.x) which also holds, in this `lab/`
 folder, the code that runs on the computers of the lab. **The branch to use is `lab`** (the default branch of the fork):
-it is `5.3.x` of PyMoDAQ plus this folder, nothing of PyMoDAQ itself is changed.
+it is `5.3.x` of PyMoDAQ plus this folder; the only PyMoDAQ files it changes are the two root README files (a note at the top).
 
 | folder | what it is |
 |---|---|
 | `pymodaq_plugins_thermospectro` | the **ThermoSpectro** extension: one or two spectrometers and a camera, each with a thermostat, recorded during temperature ramps; 12 presets; `tools/thermospectro_export.py` makes csv and tif files from the h5 files |
 | `pymodaq_plugins_quantumnorthwest` | the actuator **QNW_TC** for the Quantum Northwest TC 125 / TC 1 / TC 1B temperature controllers, with a simulator, `qnw_tc_check` (first contact), `qnw_tc_start` and `qnw_tc_demo` |
 | `pymodaq_plugins_oceaninsight` | the **Seabreeze** spectrometers (Ocean Insight / Ocean Optics): pyseabreeze by default, several spectrometers at once, dark pixels removed, nm axis |
-| `windows/` | launchers of the second computer (`zelux.bat`, `zeluxspec.bat`) |
+| `windows/` | launchers of the second computer (`zelux.bat`, `zeluxspec.bat`: copy them where you want, or into the `Scripts` folder of the environment) |
 | `environments/` | the Python packages of the two computers, and how they differ |
 | `docs/HARDWARE.md` | the drivers to install on Windows (spectrometer, Thorlabs camera, temperature controller) |
 | `install_lab.py` | installs the three plugins in the current Python environment |
@@ -19,12 +19,12 @@ it is `5.3.x` of PyMoDAQ plus this folder, nothing of PyMoDAQ itself is changed.
 You need a Python 3.10+ environment (3.12 is what the lab uses) and Git.
 
 ```powershell
-git clone https://github.com/ecordina/PyMoDAQ.git
+git clone -b lab --single-branch https://github.com/ecordina/PyMoDAQ.git
 cd PyMoDAQ
 python lab/install_lab.py --camera --usb
 ```
 
-`install_lab.py` installs PyMoDAQ 5.3 if it is missing, then the three plugins **editable** (the environment uses the
+`install_lab.py` installs PyMoDAQ 5.3 (with PyQt6, `--qt` chooses another Qt binding) if it is missing, then the three plugins **editable** (the environment uses the
 files of this folder). `--camera` adds the Thorlabs camera plugin and `tifffile`, `--usb` adds `libusb-package` and `pyusb`
 for the pyseabreeze spectrometers; `--dry-run` shows what would be done. Then install the drivers of the instruments
 (`docs/HARDWARE.md`) and try, without any hardware first:
@@ -44,7 +44,8 @@ git pull
 python lab/install_lab.py --no-pymodaq        # only needed when a dependency changed
 ```
 
-then start PyMoDAQ again. Nothing else is to be done on the computers: **do not edit the installed files in
+then start PyMoDAQ again. Do not use the *Update* button of the Plugin Manager of PyMoDAQ for the lab plugins (it would
+replace the one of this repository by the release of PyPI). Nothing else is to be done on the computers: **do not edit the installed files in
 `site-packages`**, change the code in this repository (on any computer: edit, `git commit`, `git push`) and pull it on
 the others. A computer which was set up from the zips of the first versions (`pmdq`, `pmdq_pc2`) can keep its environment: run
 `install_lab.py` in it, which replaces the installed copies of the plugins by the ones of this repository.
@@ -73,4 +74,6 @@ git fetch upstream
 git merge upstream/5.3.x                                              # on the branch lab
 ```
 
-`5.3.x` of the fork can be kept equal to the one of PyMoDAQ; the lab code only lives in `lab/`, so merges do not conflict.
+`5.3.x` of the fork can be kept equal to the one of PyMoDAQ; the lab code only lives in `lab/`, so merges only conflict if PyMoDAQ
+changes the first lines of its root `README.rst` / `README.rst.tpl`, where the note of this fork is. GitHub Actions is left
+disabled on the fork (its workflows would rewrite the READMEs and push to `lab`).

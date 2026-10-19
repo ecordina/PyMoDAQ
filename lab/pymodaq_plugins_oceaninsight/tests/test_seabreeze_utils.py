@@ -398,7 +398,7 @@ class TestAutomaticDevice:
 
 
 class TestPrepareUsb:
-    """On Windows pyusb finds the libusb DLL of the libusb-package package, and pyseabreeze is the backend"""
+    """On Windows pyusb finds the libusb DLL of the libusb-package package"""
 
     @pytest.fixture
     def windows(self, monkeypatch, tmp_path):
@@ -412,7 +412,6 @@ class TestPrepareUsb:
         added = []
         monkeypatch.setattr(os, 'add_dll_directory', added.append, raising=False)
         monkeypatch.setenv('PATH', '/usr/bin')
-        monkeypatch.delenv('SEABREEZE_BACKEND', raising=False)
         return folder, added
 
     def test_the_dll_folder_is_made_available(self, windows):
@@ -423,7 +422,6 @@ class TestPrepareUsb:
 
         assert added == [str(folder)]
         assert os.environ['PATH'].split(os.pathsep) == [str(folder), '/usr/bin']
-        assert os.environ['SEABREEZE_BACKEND'] == 'pyseabreeze'
 
     def test_it_can_be_called_again(self, windows):
         import os
@@ -434,21 +432,13 @@ class TestPrepareUsb:
 
         assert os.environ['PATH'].split(os.pathsep).count(str(folder)) == 1
 
-    def test_the_backend_chosen_by_the_user_is_kept(self, windows, monkeypatch):
-        import os
-        monkeypatch.setenv('SEABREEZE_BACKEND', 'cseabreeze')
-
-        sbu.prepare_usb()
-
-        assert os.environ['SEABREEZE_BACKEND'] == 'cseabreeze'
-
     def test_nothing_is_done_without_the_package(self, windows, monkeypatch):
         import os
         monkeypatch.setitem(sys.modules, 'libusb_package', None)  # (not installed)
 
         assert sbu.prepare_usb() is None
 
-        assert os.environ['PATH'] == '/usr/bin' and 'SEABREEZE_BACKEND' not in os.environ
+        assert os.environ['PATH'] == '/usr/bin'
 
     def test_nothing_is_done_on_linux(self, windows, monkeypatch):
         import os
@@ -456,7 +446,7 @@ class TestPrepareUsb:
 
         assert sbu.prepare_usb() is None
 
-        assert os.environ['PATH'] == '/usr/bin' and 'SEABREEZE_BACKEND' not in os.environ
+        assert os.environ['PATH'] == '/usr/bin'
 
     def test_pyseabreeze_is_prepared_before_it_is_imported_and_not_the_other_one(self, monkeypatch):
         calls = []

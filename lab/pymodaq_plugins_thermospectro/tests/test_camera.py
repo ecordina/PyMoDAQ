@@ -488,6 +488,39 @@ class TestImagePlot:
 
         assert list(plot.viewer._raw_data.labels) == ['channel 0', 'channel 1']
 
+    def test_unsigned_images_are_shown_as_signed_floats(self, plot):
+        """The viewer negates the image on request: an unsigned integer would wrap around"""
+        image = (gradient() % 200).astype(np.uint16)
+
+        plot.set_image(image, [image, image])
+
+        shown = plot.viewer._raw_data.data
+        assert all(array.dtype == np.float32 for array in shown) and np.array_equal(shown[0], image.astype(np.float32))
+
+    def test_an_image_which_was_cleared_does_not_come_back_with_a_button_of_the_toolbar(self, plot):
+        plot.clear_image('no camera')
+
+        plot.view.get_action('autolevels').trigger()
+
+        assert plot.viewer._raw_data is None
+        assert all(item.image is None for item in plot.view.data_displayer.get_images().values())
+        plot.set_image(gradient())  # (and the next image is shown)
+        assert plot.shape == (80, 120) and plot.viewer._raw_data is not None
+
+    def test_the_view_is_fitted_again_after_a_resize_unless_the_user_zoomed(self, plot, qtbot):
+        plot.getPlotItem().setRange(xRange=(10, 20), yRange=(10, 20), padding=0.0)
+        plot._user_view = True
+        plot._fit_timer.start(0)
+        qtbot.wait(30)
+        x_range, _ = plot.getPlotItem().viewRange()
+        assert x_range[1] - x_range[0] < 50  # (the user's zoom is kept)
+
+        plot._user_view = False
+        plot._fit_timer.start(0)
+        qtbot.wait(30)
+        x_range, _ = plot.getPlotItem().viewRange()
+        assert x_range[0] <= 0.5 and x_range[1] >= 119.5
+
     def test_the_tools_which_move_the_image_are_not_offered(self, plot):
         """The ROIs are drawn on the raw pixels: flipping or turning the image would put them at the wrong place"""
         for name in ('flip_ud', 'flip_lr', 'rotate'):
