@@ -10,7 +10,9 @@ update a machine (restart PyMoDAQ afterwards). Run it again when a plugin has ne
 
 The plugins (folders next to this script):
 
-* ``pymodaq_plugins_thermospectro``: the ThermoSpectro extension (spectrometers, camera, thermostats, ramps) and its presets;
+* ``pymodaq_plugins_thermospectro``: the five applications which log spectrometers, a camera and thermal controllers
+  (held at a temperature or ramped) and the commands which start them (``thermo_2spectro``, ``thermo_spectro``,
+  ``camera``, ``thermo_camera``, ``thermo_camera_spectro``);
 * ``pymodaq_plugins_quantumnorthwest``: the actuator ``QNW_TC`` (Quantum Northwest TC 125 / TC 1 / TC 1B) and ``qnw_tc_check``;
 * ``pymodaq_plugins_oceaninsight``: the Seabreeze spectrometers (pyseabreeze by default, several spectrometers at once).
 
@@ -37,6 +39,13 @@ MINIMUM_PYTHON = (3, 10)
 #: the Qt bindings PyMoDAQ can use: the name of the extra of pymodaq, the python module which says it is installed
 QT_BINDINGS = {'pyqt6': 'PyQt6', 'pyside6': 'PySide6', 'pyqt5': 'PyQt5'}
 PYMODAQ_VERSIONS = '>=5.3,<5.4'
+#: the commands of pymodaq_plugins_thermospectro: each one looks at what is connected and starts its own application
+APPLICATIONS = ('thermo_2spectro', 'thermo_spectro', 'camera', 'thermo_camera', 'thermo_camera_spectro')
+FINAL_HINT = ('\nDone. Start PyMoDAQ again. The command of each application looks for the instruments by itself:\n'
+              f'  {" | ".join(APPLICATIONS)}\n'
+              '  thermo_camera_spectro --mock               (no hardware)\n'
+              '  qnw_tc_check COM3 --trace                  (the thermostat)\n'
+              '  python lab/pymodaq_plugins_thermospectro/tools/thermospectro_export.py FILE.h5   (csv and tif)')
 
 
 def installed(module: str) -> bool:
@@ -113,9 +122,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             print(f'Failed: {" ".join(step)}', file=sys.stderr)
             return result.returncode
     if not args.dry_run:
-        print('\nDone. Start PyMoDAQ again. For instance:\n  thermospectro ThermoCameraSpectroMock      (no hardware)\n'
-              '  qnw_tc_check COM3 --trace                  (the thermostat)\n'
-              '  python lab/pymodaq_plugins_thermospectro/tools/thermospectro_export.py FILE.h5   (csv and tif)')
+        print(FINAL_HINT)
     return 0
 
 

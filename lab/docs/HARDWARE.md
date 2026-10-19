@@ -17,7 +17,7 @@ Two spectrometers at once: each module picks the one whose rank (by serial numbe
 
 Check: `python -c "from seabreeze.pyseabreeze import SeaBreezeAPI; print(SeaBreezeAPI().list_devices())"`
 
-## The Thorlabs camera (presets with a camera)
+## The Thorlabs camera (the commands with a camera)
 
 `python lab/install_lab.py --camera` installs `pymodaq_plugins_thorlabs` (it brings `pylablib`) and `tifffile`. The camera
 needs the driver of its family:
@@ -40,6 +40,6 @@ Check that it is seen: `python -c "from pylablib.devices import Thorlabs; print(
 qnw_tc_check COM3 --trace
 ```
 
-The TC 125 needs its serial option (a USB or RS-232 connector at the back). The port is not stored in a preset: choose it
-in the settings of the `QNW_TC` module before connecting. The plugin's README says what the controller does and what was
+The TC 125 needs its serial option (a USB or RS-232 connector at the back). The command (`thermo_spectro`...) looks for the
+controller by itself; when it does not find it, choose the port in the settings of the `QNW_TC` module before connecting. The plugin's README says what the controller does and what was
 verified on a real TC 125.

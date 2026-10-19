@@ -11,9 +11,10 @@ It simplifies the interaction with detector and actuator hardware to go straight
 .. note::
 
    **This is a fork of PyMoDAQ for the instruments of a lab.** PyMoDAQ itself is unchanged (it is the 5.3.x branch of the
-   original repository); the folder ``lab/`` holds the plugins which run on the lab computers (the ThermoSpectro
-   extension, the Quantum Northwest temperature controllers, the Seabreeze spectrometers) and the way to install and
-   update them on a computer: see ``lab/README.md``.
+   original repository); the folder ``lab/`` holds the plugins which run on the lab computers (five applications
+   to log spectrometers, a camera and thermal controllers: ``thermo_2spectro``, ``thermo_spectro``, ``camera``,
+   ``thermo_camera``, ``thermo_camera_spectro``; the Quantum Northwest temperature controllers; the Seabreeze
+   spectrometers) and the way to install and update them on a computer: see ``lab/README.md``.
 
 This is the main repository README. Below are links to the README files for each one of the four individual packages:
 

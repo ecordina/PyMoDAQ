@@ -21,6 +21,7 @@ What the two computers had changed in their installed plugins is now part of the
   the plugin itself on Windows (`prepare_usb`), nothing is to be put in `site-packages`. (The `SEABREEZE_BACKEND` variable
   which that file also set is not read by python-seabreeze: the plugin chooses the backend of each spectrometer itself.)
 * PC 2: the image of the camera in ThermoSpectro is shown by the image viewer of PyMoDAQ (colour channels, histogram,
-  levels...), and the launchers `lab/windows/zelux.bat` and `zeluxspec.bat` start the presets `ThermoZeluxMockThermo` and
-  `ThermoZeluxMockSpectroMockThermo` (these presets were rebuilt from the names in the launchers: the PC's own files were not
-  in the environment; compare them with the ones of the computer).
+  levels...). Its launchers `zelux.bat` and `zeluxspec.bat` (they started the presets `ThermoZeluxMockThermo` and
+  `ThermoZeluxMockSpectroMockThermo`, a Zelux camera with a Mock thermal controller, alone or with a Mock spectrometer) were
+  replaced by the five commands: `thermo_camera --thermostat-plugin Mock` and `thermo_camera_spectro --thermostat-plugin
+  Mock` are what they did with the instruments looked for (add `--camera-plugin Thorlabs_TSI` for the Zelux).

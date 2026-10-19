@@ -6,10 +6,9 @@ it is `5.3.x` of PyMoDAQ plus this folder; the only PyMoDAQ files it changes are
 
 | folder | what it is |
 |---|---|
-| `pymodaq_plugins_thermospectro` | the **ThermoSpectro** extension: one or two spectrometers and a camera, each with a thermostat, recorded during temperature ramps; 12 presets; `tools/thermospectro_export.py` makes csv and tif files from the h5 files |
-| `pymodaq_plugins_quantumnorthwest` | the actuator **QNW_TC** for the Quantum Northwest TC 125 / TC 1 / TC 1B temperature controllers, with a simulator, `qnw_tc_check` (first contact), `qnw_tc_start` and `qnw_tc_demo` |
+| `pymodaq_plugins_thermospectro` | the five **applications** (`thermo_2spectro`, `thermo_spectro`, `camera`, `thermo_camera`, `thermo_camera_spectro`): spectrometers and a camera recorded while a thermal controller holds a temperature or runs a ramp, for any length of time; they look for the instruments by themselves; `tools/thermospectro_export.py` makes csv and tif files from the h5 files |
+| `pymodaq_plugins_quantumnorthwest` | the actuator **QNW_TC** for the Quantum Northwest TC 125 / TC 1 / TC 1B temperature controllers, with a simulator and `qnw_tc_check` (first contact) |
 | `pymodaq_plugins_oceaninsight` | the **Seabreeze** spectrometers (Ocean Insight / Ocean Optics): pyseabreeze by default, several spectrometers at once, dark pixels removed, nm axis |
-| `windows/` | launchers of the second computer (`zelux.bat`, `zeluxspec.bat`: copy them where you want, or into the `Scripts` folder of the environment) |
 | `environments/` | the Python packages of the two computers, and how they differ |
 | `docs/HARDWARE.md` | the drivers to install on Windows (spectrometer, Thorlabs camera, temperature controller) |
 | `install_lab.py` | installs the three plugins in the current Python environment |
@@ -30,11 +29,13 @@ for the pyseabreeze spectrometers; `--dry-run` shows what would be done. Then in
 (`docs/HARDWARE.md`) and try, without any hardware first:
 
 ```powershell
-thermospectro ThermoCameraSpectroMock
+thermo_camera_spectro --mock
 ```
 
-(The commands are in the `Scripts` folder of the environment.) When everything is plugged in, click the plug button of the
-extension (*Connect the modules*).
+(The commands are in the `Scripts` folder of the environment.) Without `--mock` the same command looks at what is connected:
+it connects what it recognizes and tells what it does not (select the port of a thermal controller, `COM6` for instance, in the
+settings of its module in the Dashboard, click *Ini*), then you press *Start* in the window of the application: it logs
+everything until *Stop*, or for the duration you set (48 h...). See the README of `pymodaq_plugins_thermospectro`.
 
 ## Update a computer
 
@@ -54,17 +55,18 @@ the others. A computer which was set up from the zips of the first versions (`pm
 
 ```bash
 # from the lab folder of the plugin, with its test tools (pytest, pytest-qt) in the environment
-cd lab/pymodaq_plugins_thermospectro && python -m pytest -q          # the extension: ~900 tests, 15-25 minutes
-cd lab/pymodaq_plugins_quantumnorthwest && python -m pytest -q      # the controller: ~530 tests, under a minute
-cd lab/pymodaq_plugins_oceaninsight && python -m pytest -q          # the spectrometers
+cd lab/pymodaq_plugins_thermospectro && python -m pytest -q          # the applications: ~1,250 tests, 40-60 minutes in one piece (they open real windows)
+cd lab/pymodaq_plugins_quantumnorthwest && python -m pytest -q      # the controller: ~570 tests, a couple of minutes
+cd lab/pymodaq_plugins_oceaninsight && python -m pytest -q          # the spectrometers: ~130 tests
 python -m pytest -q lab/tests                                        # install_lab.py (from the root)
 ```
 
 The tests use simulated instruments (Mock modules of PyMoDAQ, the simulated controller `sim://tc125`), no hardware is
 needed. The plugins have their own README (`README.rst`), which is the reference for their settings.
 
-New presets (the experiments of the Dashboard) are written by `lab/pymodaq_plugins_thermospectro/tools/make_camera_presets.py`
-(edit its table, run it) and are copied to the experiments folder of PyMoDAQ by the `thermospectro` command.
+A new application or instrument is a `Configuration` in `lab/pymodaq_plugins_thermospectro/src/pymodaq_plugins_thermospectro/configurations.py`
+(its units and modules), an extension class in `extensions/`, and a command in `launcher.py` / `pyproject.toml`; what the
+commands recognize is in `detect.py`.
 
 ## Follow PyMoDAQ
 

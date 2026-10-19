@@ -91,6 +91,22 @@ class TestMain:
 
         assert len(results) == 1 and 'Failed' in capsys.readouterr().err
 
+    def test_the_hint_at_the_end_names_the_commands_of_the_package(self, monkeypatch, capsys):
+        import toml
+
+        class Result:
+            returncode = 0
+
+        monkeypatch.setattr(install_lab.subprocess, 'run', lambda step: Result())
+
+        assert install_lab.main(['--no-pymodaq']) == 0
+
+        told = capsys.readouterr().out
+        scripts = toml.load(SCRIPT.parent / 'pymodaq_plugins_thermospectro' / 'pyproject.toml')['project']['scripts']
+        assert list(install_lab.APPLICATIONS) == list(scripts)  # (what the hint says is what the package installs)
+        assert all(command in told for command in scripts) and 'qnw_tc_check' in told
+        assert 'thermospectro ' not in told and 'Preset' not in told and 'qnw_tc_start' not in told
+
     def test_help(self, capsys):
         with pytest.raises(SystemExit) as stop:
             install_lab.main(['--help'])
