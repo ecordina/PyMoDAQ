@@ -10,7 +10,8 @@ from pymodaq_plugins_thermospectro.extensions import thermo_spectro
 SPECTRO_PRESETS = ['ThermoSpectroMock', 'ThermoSpectroSeabreeze', 'ThermoSpectroSingleMock',
                    'ThermoSpectroSingleSeabreeze']
 CAMERA_PRESETS = ['ThermoCameraMock', 'ThermoCameraSpectroMock', 'ThermoCameraThorlabsTSI',
-                  'ThermoCameraSpectroThorlabsTSI', 'ThermoCameraThorlabsUC480', 'ThermoCameraSpectroThorlabsUC480']
+                  'ThermoCameraSpectroThorlabsTSI', 'ThermoCameraThorlabsUC480', 'ThermoCameraSpectroThorlabsUC480',
+                  'ThermoZeluxMockThermo', 'ThermoZeluxMockSpectroMockThermo']
 PRESETS = sorted(SPECTRO_PRESETS + CAMERA_PRESETS)
 
 
@@ -92,6 +93,15 @@ class TestPresets:
         for preset in (f'ThermoCameraThorlabs{suffix}', f'ThermoCameraSpectroThorlabs{suffix}'):
             assert [m[:2] for m in modules(preset, 'actuator')] == [('Thermo1', 'QNW_TC')]
         assert dimensions(f'ThermoCameraSpectroThorlabs{suffix}') == ['DAQ1D', 'DAQ2D']
+
+    def test_the_zelux_camera_with_mock_thermostat_and_spectrometer(self):
+        """The presets of lab/windows/zelux.bat and zeluxspec.bat: a Thorlabs Zelux camera, the rest is simulated"""
+        assert [m[:2] for m in modules('ThermoZeluxMockThermo', 'detector')] == [('Camera1', 'Thorlabs_TSI')]
+        assert [m[:2] for m in modules('ThermoZeluxMockThermo', 'actuator')] == [('Thermo1', 'Mock')]
+        assert [m[:2] for m in modules('ThermoZeluxMockSpectroMockThermo', 'detector')] == [
+            ('Spectro1', 'Mock'), ('Camera1', 'Thorlabs_TSI')]
+        assert [m[:2] for m in modules('ThermoZeluxMockSpectroMockThermo', 'actuator')] == [('Thermo1', 'Mock')]
+        assert dimensions('ThermoZeluxMockSpectroMockThermo') == ['DAQ1D', 'DAQ2D']
 
     @pytest.mark.parametrize('preset', PRESETS)
     def test_nothing_is_initialized_when_a_preset_opens(self, preset):

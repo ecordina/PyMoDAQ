@@ -70,6 +70,11 @@ PRESETS = {
     'ThermoCameraThorlabsUC480': (THERMO_QNW, [('Camera1', 'UC480', 'DAQ2D')]),
     'ThermoCameraSpectroThorlabsUC480': (THERMO_QNW, [('Spectro1', 'Seabreeze', 'DAQ1D'),
                                                       ('Camera1', 'UC480', 'DAQ2D')]),
+    # a Thorlabs Zelux camera (Thorlabs_TSI) with a Mock thermostat (and a Mock spectrometer): the setup of the second
+    # computer of the lab, launched by lab/windows/zelux.bat and zeluxspec.bat
+    'ThermoZeluxMockThermo': (THERMO_MOCK, [('Camera1', 'Thorlabs_TSI', 'DAQ2D')]),
+    'ThermoZeluxMockSpectroMockThermo': (THERMO_MOCK, [('Spectro1', 'Mock', 'DAQ1D'),
+                                                       ('Camera1', 'Thorlabs_TSI', 'DAQ2D')]),
 }
 
 

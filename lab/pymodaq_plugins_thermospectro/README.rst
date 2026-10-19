@@ -190,7 +190,7 @@ can be read until its last flush (once per write) but its ``shape`` attributes m
 The presets
 ===========
 
-The package brings ten presets (the Dashboard calls them *experiments*), in
+The package brings twelve presets (the Dashboard calls them *experiments*), in
 ``src/pymodaq_plugins_thermospectro/resources/presets/``: with the actual instruments, and with simulated ones to try the
 extension without hardware.
 
@@ -214,6 +214,10 @@ Quantalux, *UC480* for the uc480 cameras of Thorlabs and the IDS uEye ones; the 
   *Thermo1*, one thermostat for the two detectors;
 * ``ThermoCameraMock`` and ``ThermoCameraSpectroMock``: the same with ``Mock`` modules (a 2D ``Mock`` detector is the
   camera, the thermostat is a ``Mock`` one), to try without hardware. The Mock image is 100 x 200 pixels.
+
+* ``ThermoZeluxMockThermo`` and ``ThermoZeluxMockSpectroMockThermo``: a Thorlabs *Zelux* camera (``Thorlabs_TSI``) with a
+  ``Mock`` thermostat, alone or with a ``Mock`` spectrometer (the setup of the second computer of the lab, started by
+  ``lab/windows/zelux.bat`` and ``zeluxspec.bat``).
 
 The type of a module cannot be changed in the experiment manager: to use another camera plugin, remove *Camera1* from the
 experiment (**Tools > Experiment**), *Add* a detector of the other plugin (a 2D one) with the same name, and save it under

@@ -462,6 +462,74 @@ class TestImagePlot:
         plot.set_locked(False)
         assert plot._rois['roi00'].translatable is True
 
+    def test_the_colors_of_a_camera_are_shown_as_channels(self, plot):
+        red, green, blue = gradient(), gradient() + 1, gradient() + 2
+
+        plot.set_image(red, [red, green, blue], ['R', 'G', 'B'])
+
+        shown = plot.viewer._raw_data
+        assert len(shown) == 3 and list(shown.labels) == ['R', 'G', 'B']
+        assert np.array_equal(shown.data[2], blue) and plot.shape == (80, 120)
+
+    def test_only_three_channels_are_shown_and_a_channel_of_another_size_is_not(self, plot):
+        image = gradient()
+        small = np.zeros((5, 5))
+
+        plot.set_image(image, [image, image, image, image])
+        assert len(plot.viewer._raw_data) == 3
+
+        plot.set_image(image, [small, small])  # (they do not fit the image the ROIs are measured on)
+        assert len(plot.viewer._raw_data) == 1 and plot.viewer._raw_data.data[0].shape == (80, 120)
+
+    def test_the_channels_are_named_when_the_camera_does_not(self, plot):
+        image = gradient()
+
+        plot.set_image(image, [image, image])
+
+        assert list(plot.viewer._raw_data.labels) == ['channel 0', 'channel 1']
+
+    def test_the_tools_which_move_the_image_are_not_offered(self, plot):
+        """The ROIs are drawn on the raw pixels: flipping or turning the image would put them at the wrong place"""
+        for name in ('flip_ud', 'flip_lr', 'rotate'):
+            assert not plot.view.get_action(name).isVisible()
+        assert plot.view.get_action('autolevels').isVisible()  # (the other tools of the viewer are there)
+
+    def test_the_levels_follow_the_image_by_default(self, plot):
+        assert plot.view.is_action_checked('autolevels')
+
+    def test_the_whole_image_comes_back_after_a_zoom(self, plot):
+        plot.getPlotItem().setRange(xRange=(10, 20), yRange=(10, 20), padding=0.0)
+        plot._user_view = True
+
+        plot.fit_view()
+
+        x_range, _ = plot.getPlotItem().viewRange()
+        assert plot._user_view is False and x_range[0] <= 0.5 and x_range[1] >= 119.5
+
+    def test_the_menu_of_a_right_click_offers_to_show_the_whole_image(self, plot, monkeypatch):
+        offered = []
+        monkeypatch.setattr(plot, '_popup', lambda event, entries: offered.append([text for text, _ in entries]))
+        scene_position = plot.getPlotItem().vb.mapViewToScene(QtCore.QPointF(60., 40.))
+        click = SimpleNamespace(double=lambda: False, button=lambda: QtCore.Qt.MouseButton.RightButton,
+                                isAccepted=lambda: False, scenePos=lambda: scene_position)
+
+        plot._on_clicked(click)
+        plot.set_locked(True)
+        plot._on_clicked(click)
+
+        assert offered[0] == ['Add a ROI here (60, 40)', 'Show the whole image']
+        assert offered[1] == ['Show the whole image']  # (nothing can be added during an experiment)
+
+    def test_a_right_click_on_a_rectangle_is_left_to_it(self, plot, monkeypatch):
+        offered = []
+        monkeypatch.setattr(plot, '_popup', lambda event, entries: offered.append(entries))
+        click = SimpleNamespace(double=lambda: False, button=lambda: QtCore.Qt.MouseButton.RightButton,
+                                isAccepted=lambda: True, scenePos=lambda: QtCore.QPointF(0., 0.))
+
+        plot._on_clicked(click)
+
+        assert offered == []
+
     def test_a_double_click_asks_for_a_roi(self, plot, qtbot):
         scene_position = plot.getPlotItem().vb.mapViewToScene(QtCore.QPointF(60., 40.))
         click = SimpleNamespace(double=lambda: True, button=lambda: QtCore.Qt.MouseButton.LeftButton,
@@ -587,6 +655,16 @@ class TestCameraView:
         view.refresh()
 
         assert view.spectrum_plot.shape == (80, 120)
+
+    def test_the_channels_of_the_camera_are_given_to_the_image(self, view, bench):
+        red, green, blue = gradient(), gradient() + 1, gradient() + 2
+        dwa = DataRaw('image', data=[red, green, blue], labels=['R', 'G', 'B'])
+        bench.unit.spectrum = Frame(red, time.monotonic(), dwa)
+        bench.unit.spectrum_dirty = True
+
+        view.refresh()
+
+        assert list(view.spectrum_plot.viewer._raw_data.labels) == ['R', 'G', 'B']
 
     def test_the_curves_follow_the_measurements(self, view, bench):
         bench.unit.start_live(time.time())

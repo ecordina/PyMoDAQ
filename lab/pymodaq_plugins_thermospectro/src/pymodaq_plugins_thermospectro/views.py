@@ -272,6 +272,6 @@ class CameraView(UnitView):
                                            else self.no_detector_message())
         else:
             before = self.spectrum_plot.shape
-            self.spectrum_plot.set_image(frame.y)
+            self.spectrum_plot.set_image(frame.y, frame.dwa.data, frame.dwa.labels)
             if self.spectrum_plot.shape != before:  # the rectangles could not know the size of the image before
                 self.update_definitions()
