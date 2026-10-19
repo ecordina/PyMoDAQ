@@ -1,0 +1,71 @@
+[features]  # defines the plugin features contained into this plugin
+instruments = true  # true if plugin contains instrument classes (else false, notice the lowercase for toml files)
+extensions = false  # true if plugins contains dashboard extensions
+models = false  # true if plugins contains pid models
+h5exporters = false  # true if plugin contains custom h5 file exporters
+scanners = false  # true if plugin contains custom scan layout (daq_scan extensions)
+
+[urls]
+package-url = 'https://pymodaq.cnrs.fr'  # replace by the url of the repository once it is published
+
+[project]
+name = "pymodaq_plugins_quantumnorthwest"
+description = 'PyMoDAQ plugin for the Quantum Northwest temperature controllers (TC 125, TC 1, TC 1B) of the Peltier-controlled cuvette holders'
+dependencies = [
+    "pymodaq>=5.3.0",
+    "pymodaq_utils>=5.3.0",
+    "pymodaq_data>=5.3.0",
+    "pyserial>=3.4",
+]
+
+authors = [
+    {name = "E. Cordina", email = "emmanuel.cordina@inrae.fr"},
+]
+maintainers = [
+    {name = "E. Cordina", email = "emmanuel.cordina@inrae.fr"},
+]
+
+# nottodo: leave everything below as is!
+
+dynamic = ["version", "urls", "entry-points"]
+readme = "README.rst"
+license = { file="LICENSE" }
+requires-python = ">=3.10"
+
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Natural Language :: English",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Human Machine Interfaces",
+    "Topic :: Scientific/Engineering :: Physics",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+
+[project.scripts]
+qnw_tc_check = "pymodaq_plugins_quantumnorthwest.hardware.diagnose:main"  # connect a controller and show what it says
+qnw_tc_start = "pymodaq_plugins_quantumnorthwest.demo:start"  # a Seabreeze spectrometer and a controller on a port
+qnw_tc_demo = "pymodaq_plugins_quantumnorthwest.demo:main"  # a Dashboard with a Mock spectrometer and a simulated controller
+
+[build-system]
+requires = [
+    "hatchling>=1.9.0",
+    "hatch-vcs", "toml",
+    "pymodaq_utils>=0.0.6",
+]
+build-backend = "hatchling.build"
+
+[tool.hatch.metadata.hooks.custom]
+
+[tool.hatch.version]
+source = "vcs"
+fallback-version = "0.1.0.dev0"  # used when the package is built outside of a git repository / without tags
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--import-mode=importlib"

@@ -1,0 +1,71 @@
+[features]  # defines the plugin features contained into this plugin
+instruments = false  # true if plugin contains instrument classes (else false, notice the lowercase for toml files)
+extensions = true  # true if plugins contains dashboard extensions
+models = false  # true if plugins contains pid models
+h5exporters = false  # true if plugin contains custom h5 file exporters
+scanners = false  # true if plugin contains custom scan layout (daq_scan extensions)
+
+[urls]
+package-url = 'https://pymodaq.cnrs.fr' #todo: replace by the url of the repository once it is published
+
+[project]
+name = "pymodaq_plugins_thermospectro"
+description = 'PyMoDAQ extension: one or two spectrometers, each with its own thermostat, recorded during temperature ramps'
+dependencies = [
+    "pymodaq>=5.3.0",
+    "pymodaq_utils>=5.3.0",
+    "pymodaq_gui>=5.3.0",
+    "pymodaq_data>=5.3.0",
+    "numpy",
+]
+
+authors = [
+    {name = "E. Cordina", email = "emmanuel.cordina@inrae.fr"},
+]
+maintainers = [
+    {name = "E. Cordina", email = "emmanuel.cordina@inrae.fr"},
+]
+
+# nottodo: leave everything below as is!
+
+dynamic = ["version", "urls", "entry-points"]
+readme = "README.rst"
+license = { file="LICENSE" }
+requires-python = ">=3.10"
+
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Natural Language :: English",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Human Machine Interfaces",
+    "Topic :: Scientific/Engineering :: Visualization",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Software Development :: User Interfaces",
+]
+
+[project.scripts]
+thermospectro = "pymodaq_plugins_thermospectro.launcher:main"  # the Dashboard with a preset and the extension
+
+[build-system]
+requires = [
+    "hatchling>=1.9.0",
+    "hatch-vcs", "toml",
+    "pymodaq_utils>=0.0.6",
+]
+build-backend = "hatchling.build"
+
+[tool.hatch.metadata.hooks.custom]
+
+[tool.hatch.version]
+source = "vcs"
+fallback-version = "0.1.0.dev0"  # used when the package is built outside of a git repository / without tags
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--import-mode=importlib"

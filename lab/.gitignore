@@ -1,0 +1,7 @@
+# the README.rst of PyMoDAQ are generated from templates and ignored at the root: the ones of the plugins are not
+!README.rst
+__pycache__/
+*.pyc
+build/
+dist/
+*.egg-info/
