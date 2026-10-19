@@ -10,7 +10,7 @@ package-url = 'https://github.com/ecordina/PyMoDAQ/tree/lab/lab/pymodaq_plugins_
 
 [project]
 name = "pymodaq_plugins_thermospectro"
-description = 'PyMoDAQ extension: one or two spectrometers, each with its own thermostat, recorded during temperature ramps'
+description = 'PyMoDAQ applications: spectrometers and a camera with thermal controllers (held at a temperature or ramped), logged to h5'
 dependencies = [
     "pymodaq>=5.3.0",
     "pymodaq_utils>=5.3.0",
@@ -50,7 +50,11 @@ classifiers = [
 ]
 
 [project.scripts]
-thermospectro = "pymodaq_plugins_thermospectro.launcher:main"  # the Dashboard with a preset and the extension
+thermo_2spectro = "pymodaq_plugins_thermospectro.launcher:thermo_2spectro"  # 2 spectrometers, 2 thermal controllers
+thermo_spectro = "pymodaq_plugins_thermospectro.launcher:thermo_spectro"  # 1 spectrometer, 1 thermal controller
+camera = "pymodaq_plugins_thermospectro.launcher:camera"  # 1 camera
+thermo_camera = "pymodaq_plugins_thermospectro.launcher:thermo_camera"  # 1 camera, 1 thermal controller
+thermo_camera_spectro = "pymodaq_plugins_thermospectro.launcher:thermo_camera_spectro"  # 1 camera, 1 spectrometer, 1 thermal controller
 
 [build-system]
 requires = [
