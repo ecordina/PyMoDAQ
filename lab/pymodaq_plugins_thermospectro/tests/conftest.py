@@ -76,7 +76,7 @@ def ext(dashboard, qtbot, tmp_path, monkeypatch):
     from pymodaq_plugins_thermospectro.extensions import thermo_spectro
     from pymodaq_plugins_thermospectro.camera import RectRoi
     from pymodaq_plugins_thermospectro.rois import Roi
-    from pymodaq_plugins_thermospectro.unit_settings import CameraSettings
+    from pymodaq_plugins_thermospectro.unit_settings import END_LOG, CameraSettings
 
     monkeypatch.setattr(thermo_spectro, 'default_store_path', lambda: tmp_path / 'remembered' / 'rois.json')
     shared_ui, extension = create_extension(dashboard, thermo_spectro.ThermoSpectro)
@@ -103,6 +103,7 @@ def ext(dashboard, qtbot, tmp_path, monkeypatch):
         ramp['final'] = 3.0
         ramp['velocity'] = 90.0  # 1.5 per second: 2 s
         ramp['n_cycles'] = 1
+        ramp['end_at'] = END_LOG  # (the log ends with the ramps: the default, which goes on, has its own tests)
     extension.settings['experiment', 'update_period'] = 0.1
     extension.settings['experiment', 'watchdog'] = 0.0
     yield extension

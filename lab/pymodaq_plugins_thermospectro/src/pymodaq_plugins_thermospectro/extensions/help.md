@@ -23,11 +23,13 @@ one unit drives it (*Drive it*), the other only records its temperature.
    days). Tick what is recorded to disk, choose the folder in the *Saving* tab.
 5. Click **Start**: everything is recorded until **Stop**, or the end of the duration. The status bar shows the time
    elapsed and left.
-6. **Stop**: a controller **held at a temperature stays at it** and the log ends at once; a **ramp** is brought back to its
-   initial value (a second Stop offers to stop right there), then the log ends (with one unit on a ramp and another
-   holding a temperature, Stop brings the ramp back, then ends the log: the held controller stays). **Pause** freezes the
-   set-point of a ramp. A log with only ramps ends by itself when they are over; a log which holds a temperature ends at
-   Stop or when its duration is over.
+6. **Stop**: a controller **held at a temperature stays at it** and the log ends at once; so does one whose ramps are over
+   (it stays where they ended); a **ramp** which is going on is brought back to its initial value (a second Stop offers to
+   stop right there), then the log ends (with one unit on a ramp and another holding a temperature, Stop brings the ramp
+   back, then ends the log: the held controller stays). **Pause** freezes the set-point of a ramp.
+   A cycle of ramps does **not** end the log (unless *When the ramps are over* says *End the log*): after the last cycle the
+   log goes on at the initial value (or the final one) until you press Stop, or the duration is over. **End at the top** and
+   **End at the bottom** end the ramps whenever you want and go on logging there.
 
 ## The ROIs
 
@@ -70,9 +72,24 @@ the fourth one is computed and shown (read-only); choose which in **Defined by**
 
 Then the temperature **waits at the final value**, **goes back to the initial value** (*Way back defined by*: the
 same velocity as the way there, another velocity, or a duration) and **waits at the initial value**. The cycle is
-repeated *Number of cycles* times (0: until Stop). If the thermostat does not start at the initial value, it is
-brought there first. The ramps of the two units are independent (different values, speeds, number of cycles). Untick
-*Drive it* to only record a unit, without driving its thermal controller.
+repeated *Number of cycles* times (0: until you end the ramps, see below, or press Stop). If the thermostat does not
+start at the initial value, it is brought there first. The ramps of the two units are independent (different values,
+speeds, number of cycles). Untick *Drive it* to only record a unit, without driving its thermal controller.
+
+**When the ramps are over**: the log is not over. The controller **stays where the ramps ended and the log goes on**, until
+you press **Stop** (or the duration of the log is over); the file records those readouts with the phase `hold`, the set-point
+being that temperature and the cycle the last one. *When the ramps are over* says where that is:
+
+* **Stay at the initial value (bottom), go on logging** (the default): after the way back of the last cycle;
+* **Stay at the final value (top), go on logging**: the last cycle stops when the top is reached (no wait there and no way
+  back), the controller stays at the high temperature;
+* **End the log**: the log ends with the ramps (the controller stays at the initial value).
+
+**End at the top / End at the bottom** (the arrows of the toolbar) do the same at any time, while a ramp is going on, whatever
+the setting says: the temperature goes to the final value (the top, at the speed of the ramp) or back to the initial value (the
+bottom, at the speed of the way back) from wherever it is, stays there, and the log goes on. This is how cycles which last
+until you stop them (*Number of cycles* 0) are ended, at the high or at the low temperature. **Stop**, on the other hand, ends the
+log: during the ramps it brings them back to the initial value first, then ends (a second Stop offers to stop right there).
 
 The thermostat is given a new set-point every second (*Set-point every*), so any thermostat with a PyMoDAQ plugin can
 be used, whatever its own ramping capabilities. Protect it with the bounds of its actuator (*Set bounds* in the
@@ -107,7 +124,7 @@ Each readout saves the ROIs and the temperature; the **whole spectrum** (image) 
 every*) seconds, which keeps a long log small (0: at each readout).
 
 Independently of each other, per unit: **the full spectrum** (the full image of a camera), **each ROI**, **the temperature** (with the set-point,
-the cycle and the phase of the ramp). Untick the *Do logging* button of the toolbar to record nothing at all.
+the cycle and the phase of the ramp: after the ramps, the phase is `hold` and the cycle the last one). Untick the *Do logging* button of the toolbar to record nothing at all.
 
 Each experiment is written in **a new h5 file** in the folder of the *Saving* tab, in **SWMR** mode (single writer,
 multiple readers): another program can open it while it is written, for instance:
@@ -127,11 +144,13 @@ integration and readout times and, for the ROIs, their windows. The codes of `Un
 
 ## Safety
 
-A **ramp** is never left hot on purpose: its set-point returns to the initial value on Stop, when its spectrometer or its
+A **ramp** is never left hot by accident: its set-point returns to the initial value on Stop, when its spectrometer or its
 thermal controller does not deliver anything for the time set in *Stop if no data for* (30 s, and at least a few readouts),
-and when a module is closed. A controller **held at a temperature** is left where it is when the log ends (that is the
-point of holding it) and is not touched when a module goes silent: the log goes on, tells it, and tells it when the data
-come back (a glitch must not end a log of two days). A thermal controller which is closed cannot be brought back: the
+and when a module is closed. A controller **held at a temperature**, or whose **ramps are over** (it was told to stay at the
+top, or at the bottom), is left where it is when the log ends (that is the point of holding it) and is not touched when a
+module goes silent: the log goes on, tells it, and tells it when the data come back (a glitch must not end a log of two
+days). A thermal controller which is closed cannot be brought back: the
 extension says so, with its last set-point. When the extension is closed during a ramp, a dialog asks whether to set the
 initial temperatures at once (the proposed answer) or to bring them back gradually; when PyMoDAQ itself is quit, they are
-set at once.
+set at once. When no ramp is going on (the controllers are held, or the ramps are over) there is nothing to bring back: the
+dialog only asks whether to close the log, and the controllers stay where they are.

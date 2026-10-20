@@ -14,8 +14,8 @@ from typing import Iterator, Optional, Sequence
 
 from pymodaq_gui.parameter import Parameter
 
-from pymodaq_plugins_thermospectro.ramp import (BackMode, BackSpec, Phase, RampMode, RampProgram, RampSpec,
-                                                format_duration, make_program)
+from pymodaq_plugins_thermospectro.ramp import (END_AT_FINAL, END_AT_INITIAL, BackMode, BackSpec, Phase, RampMode,
+                                                RampProgram, RampSpec, format_duration, make_program)
 from pymodaq_plugins_thermospectro import camera
 from pymodaq_plugins_thermospectro.camera import RectRoi, default_rect_rois
 from pymodaq_plugins_thermospectro.rois import Roi, default_rois
@@ -28,9 +28,16 @@ ROI_NAME = re.compile(r'^roi\d+$')
 #: What a thermal controller does during a run
 CONTROL_RAMP = 'Run a ramp'
 CONTROL_HOLD = 'Hold at a temperature'
+#: What happens when the ramps are over: the controller stays at the initial (bottom) or at the final (top) value and the
+#: log goes on until it is stopped, or the log ends (the controller stays at the initial value)
+END_INITIAL = 'Stay at the initial value (bottom), go on logging'
+END_FINAL = 'Stay at the final value (top), go on logging'
+END_LOG = 'End the log'
+#: ... and where the program ends in each case (None: the log ends)
+END_CHOICES = {END_INITIAL: END_AT_INITIAL, END_FINAL: END_AT_FINAL, END_LOG: None}
 #: The fields of a ramp (they are hidden when the controller is held at one temperature)
 RAMP_FIELDS = ('mode', 'initial', 'take_current', 'final', 'velocity', 'duration', 'hold_final', 'back_mode',
-               'back_velocity', 'back_duration', 'hold_initial', 'n_cycles', 'cycle_duration')
+               'back_velocity', 'back_duration', 'hold_initial', 'n_cycles', 'end_at', 'cycle_duration')
 
 #: The default times of a spectrometer
 DEFAULT_INTEGRATION_TIME = 500.0  # ms
@@ -204,7 +211,16 @@ def _unit_definition(number: int, rois: Sequence[Roi], enabled: bool, kind: str,
             {'title': 'Wait at the initial value:', 'name': 'hold_initial', 'type': 'float', 'value': 0.0,
              'min': 0.0, 'suffix': 'min'},
             {'title': 'Number of cycles:', 'name': 'n_cycles', 'type': 'int', 'value': 1, 'min': 0,
-             'tip': 'How many times the cycle (ramp, wait, way back, wait) is run. 0: until Stop is pressed'},
+             'tip': 'How many times the cycle (ramp, wait, way back, wait) is run. 0: until "End at the top" or '
+                    '"End at the bottom" (toolbar) or Stop is pressed'},
+            {'title': 'When the ramps are over:', 'name': 'end_at', 'type': 'list',
+             'limits': [END_INITIAL, END_FINAL, END_LOG], 'value': END_INITIAL,
+             'tip': 'After the last cycle the controller stays at the initial value (the bottom: the end of the last way '
+                    'back) or at the final value (the top: the last cycle stops when it is reached, with no way back) '
+                    'and the log goes on, with the controller held there, until you press Stop (or the duration of '
+                    'the log is over). "End the log": the log ends with the ramps. "End at the top" and "End at the '
+                    'bottom" in the toolbar do the same at any time, Stop brings the ramps back to the initial value '
+                    'and ends the log'},
             {'title': 'One cycle lasts:', 'name': 'cycle_duration', 'type': 'str', 'value': '', 'readonly': True},
         ]},
         {'title': 'Status:', 'name': 'status', 'type': 'group', 'children': [
@@ -316,6 +332,16 @@ class UnitSettings:
     @property
     def hold_temperature(self) -> float:
         return float(self.param['ramp', 'hold_temperature'])
+
+    @property
+    def end_at(self) -> str:
+        """What happens when the ramps are over: :data:`END_INITIAL`, :data:`END_FINAL` or :data:`END_LOG`"""
+        return str(self.param['ramp', 'end_at'])
+
+    @property
+    def after_program(self) -> Optional[str]:
+        """Where the ramps end and the log goes on (``'initial'`` or ``'final'``), None if the log ends with them"""
+        return END_CHOICES.get(self.end_at, END_AT_INITIAL)
 
     @property
     def full_interval(self) -> float:
@@ -466,7 +492,8 @@ class UnitSettings:
         """
         ramp = self.param.child('ramp')
         return make_program(self.ramp_spec(), self.back_spec(), hold_final=float(ramp['hold_final']),
-                            hold_initial=float(ramp['hold_initial']), n_cycles=int(ramp['n_cycles']))
+                            hold_initial=float(ramp['hold_initial']), n_cycles=int(ramp['n_cycles']),
+                            end_at=self.after_program or END_AT_INITIAL)
 
     def refresh_ramp(self):
         """Keep the fields of the ramp consistent
@@ -503,6 +530,7 @@ class UnitSettings:
                     if back_mode != BackMode.DURATION:
                         ramp.child('back_duration').setValue(float(span / computed))
             ramp.child('cycle_duration').setValue(self.describe_program())
+            ramp.child('cycle_duration').setOpts(tip=self.describe_program(full=True))
             self._show_fields()
 
     def hide_unused(self, thermostat: bool = True):
@@ -534,16 +562,30 @@ class UnitSettings:
         for name in RAMP_FIELDS:
             ramp.child(name).setOpts(visible=drives and not holds)
 
-    def describe_program(self) -> str:
-        """How long a cycle lasts (and all the cycles), or why the program is not valid"""
+    def describe_program(self, full: bool = False) -> str:
+        """How long a cycle lasts (and all the cycles), or why the program is not valid
+
+        The short text is what the tree shows (its column is narrow): what the setting *When the ramps are over* says is
+        only repeated when it is not the usual thing. `full` tells everything (the tooltip of the line).
+        """
         try:
             program = self.program()
         except ValueError as e:
             return f'invalid: {e}'
         text = (f'{format_duration(program.cycle_duration)} (ramp {format_duration(program.duration_out)}, '
                 f'way back {format_duration(program.duration_back)})')
-        if program.total_duration is not None:
-            text += f', {program.n_cycles} cycles: {format_duration(program.total_duration)}'
+        after = self.after_program
+        if program.total_duration is None:
+            return text + (', repeated until you end the ramps or press Stop' if full else ', until stopped')
+        text += f', {program.n_cycles} cycles: {format_duration(program.total_duration)}'
+        if after == END_AT_FINAL:
+            text += ' (ends at the top)'
+        if full:
+            text += {None: ', then the log ends',
+                     END_AT_INITIAL: ', then the log goes on at the initial value until you press Stop',
+                     END_AT_FINAL: ', then the log goes on at the final value until you press Stop'}[after]
+        elif after is None:
+            text += ', then the log ends'
         return text
 
     def set_units(self, units: str):

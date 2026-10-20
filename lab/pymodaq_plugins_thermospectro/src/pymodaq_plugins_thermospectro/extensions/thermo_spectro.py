@@ -25,9 +25,12 @@ The spectra are shown small, the ROIs (those which are to be plotted) and the te
 plot per unit. Every plot can be closed and opened again from the Plots menu.
 
 *Live* (camera icon) reads the spectrometers out without running anything: use it to set the ROIs. *Start* runs the
-ramps and records, *Pause* freezes the set-points, *Stop* brings every thermostat back to its initial value before the
-experiment ends, which is also what happens when something goes wrong (a module stops answering). The file of an
-experiment is written in SWMR mode, so that it can be read by another program while it is written.
+ramps and records, *Pause* freezes the set-points. When the last cycle of the ramps is over the log goes on, with the
+thermostat held where they ended (the initial value, or the final one: *When the ramps are over*), until *Stop*;
+*End at the top* and *End at the bottom* end the ramps at any time and go on logging there. *Stop* brings a ramp which is
+going on back to its initial value before the experiment ends, which is also what happens when something goes wrong (a
+module stops answering). The file of an experiment is written in SWMR mode, so that it can be read by another program
+while it is written.
 """
 from __future__ import annotations
 
@@ -57,7 +60,7 @@ from pymodaq.extensions.utils import CustomExt
 from pymodaq_plugins_thermospectro import configurations, saving
 from pymodaq_plugins_thermospectro.camera import RectRoi, default_rect_rois
 from pymodaq_plugins_thermospectro.camera_widgets import HINT as CAMERA_HINT
-from pymodaq_plugins_thermospectro.ramp import format_duration
+from pymodaq_plugins_thermospectro.ramp import END_AT_FINAL, END_AT_INITIAL, format_duration
 from pymodaq_plugins_thermospectro.roi_manager import HINT
 from pymodaq_plugins_thermospectro.rois import RoiStore, default_store_path
 from pymodaq_plugins_thermospectro.saving import ThermoSpectroSaver, UnitRecording, build_dtes
@@ -266,33 +269,72 @@ class ThermoSpectro(CustomExt):
                 paths |= ThermoSpectro._setting_paths(child, path)
         return paths
 
-    def _missing_settings(self, new: Parameter) -> list[str]:
-        """What a tree of settings lacks to replace the current one (a file of another application, or of an older
-        version of this one)"""
+    def _missing_settings(self, new: Parameter) -> list[tuple]:
+        """The paths of the settings which a tree lacks compared to the current one, the shortest first"""
         missing = self._setting_paths(self.settings) - self._setting_paths(new)
-        return sorted('/'.join(path) for path in missing)
+        return sorted(missing, key=lambda path: (len(path), path))
+
+    @staticmethod
+    def _copy_of(param: Parameter) -> Parameter:
+        """A new parameter (with its children) in the state of `param`"""
+        copy = Parameter.create(name=param.name(), type=param.type())
+        copy.restoreState(param.saveState())
+        return copy
+
+    def _fill_missing_settings(self, new: Parameter) -> tuple[list[str], list[str]]:
+        """Complete a tree of settings with what it lacks of the current one: the settings which a later version of the
+        application has (a file saved before they existed) keep their current value
+
+        Returns
+        -------
+        (lost, added): lists of str
+            The settings which cannot be taken from the current tree (a whole group of the root is missing: the file is
+            the one of another application), and the ones which were added
+        """
+        known = self._setting_paths(new)
+        lost, added = [], []
+        for path in self._missing_settings(new):
+            if path in known:  # (it came with a group which was added)
+                continue
+            if len(path) == 1:
+                lost.append('/'.join(path))
+                continue
+            if path[:-1] not in known:  # (inside a group which is lost: it is told as a whole)
+                continue
+            parent = new.child(*path[:-1])
+            current = self.settings.child(*path)
+            siblings = list(current.parent().children())
+            parent.insertChild(min(siblings.index(current), len(parent.children())), self._copy_of(current))
+            known |= {path} | self._setting_paths(parent.child(path[-1]), path)
+            added.append('/'.join(path))
+        return lost, added
 
     def set_settings(self, settings):
         """Settings loaded from a file replace the whole tree: the units follow
 
-        A tree which does not have all the settings of this application (a file saved by another application or by an
-        older version) is not loaded: it would leave the application without the parameters it reads.
+        A file saved by an older version of the application lacks the settings which came after it: they keep their
+        current value. A file which does not have a whole group of the settings (it was saved by another application) is
+        not loaded: it would leave the application without the parameters it reads.
         """
         if self.units:
             try:
                 new = self.create_parameter(settings)
+                lost, added = self._fill_missing_settings(new)
             except Exception as e:
                 logger.exception('The settings could not be read')
                 self.show_message('Settings not loaded', f'The settings could not be read: {e}', error=True)
                 return
-            missing = self._missing_settings(new)
-            if missing:
-                shown = ', '.join(missing[:5]) + (' ...' if len(missing) > 5 else '')
-                logger.warning(f'Settings not loaded: they lack {shown}')
+            if lost:
+                logger.warning(f'Settings not loaded: they lack {", ".join(lost)}')
                 self.show_message('Settings not loaded',
-                                  'This file was not saved by this application (or by an older version of it): it '
-                                  f'lacks {shown}. The settings are left as they are.', error=True)
+                                  'This file was not saved by this application: it lacks '
+                                  f'{", ".join(lost)}. The settings are left as they are.', error=True)
                 return
+            if added:
+                shown = ', '.join(added[:5]) + (' ...' if len(added) > 5 else '')
+                logger.info(f'Settings loaded: the file lacks {shown}, they keep their current value')
+                self.status_signal.emit(f'Settings loaded from a file saved by an older version: {shown} keep their '
+                                        'current value')
             settings = new
         super().set_settings(settings)
         if not self.units:
@@ -521,6 +563,16 @@ class ThermoSpectro(CustomExt):
                         f'Connect (initialize) the {everything} of the units which are not, one after '
                         'the other. Nothing is connected when a preset is opened', toolbar=self.toolbar,
                         menu='actions')
+        if self.THERMOSTATS:
+            self.toolbar.addSeparator()
+            self.add_action('end_top', 'End at the top', 'arrow_circle_up',
+                            'End the ramps now at their final value (the top of a heating ramp): the temperature goes '
+                            'there and stays, and the log goes on until you press Stop. Only while a ramp is going on',
+                            toolbar=self.toolbar, menu='actions', enabled=False)
+            self.add_action('end_bottom', 'End at the bottom', 'arrow_circle_down',
+                            'End the ramps now at their initial value (the bottom: where they started): the '
+                            'temperature goes back there and stays, and the log goes on until you press Stop. Only '
+                            'while a ramp is going on', toolbar=self.toolbar, menu='actions', enabled=False)
         for key in self.docks:
             self.add_action(f'show_{key}', self.DOCK_TITLES.get(key, key), '',
                             'Show or close this window. A closed plot can be opened again here', checkable=True,
@@ -533,6 +585,9 @@ class ThermoSpectro(CustomExt):
         self.connect_action(WorkFlowActions.START, self.start_run)
         self.connect_action(WorkFlowActions.STOP, self.stop_run)
         self.connect_action(WorkFlowActions.PAUSE, self.pause_run)
+        if self.THERMOSTATS:
+            self.connect_action('end_top', lambda *_: self.finish_ramps(END_AT_FINAL))
+            self.connect_action('end_bottom', lambda *_: self.finish_ramps(END_AT_INITIAL))
         for key in self.docks:
             self.connect_action(f'show_{key}', lambda checked, k=key: self.set_dock_visible(k, checked))
 
@@ -636,13 +691,32 @@ class ThermoSpectro(CustomExt):
         return answer == QtWidgets.QMessageBox.StandardButton.Yes
 
     def _ask_quit_choice(self) -> str:
-        """An experiment is going on and the extension is asked to close: 'return', 'jump' or 'cancel'"""
+        """An experiment is going on and the extension is asked to close: 'return', 'jump' or 'cancel'
+
+        When no ramp is going on (the controllers are held, or the ramps are over and the log goes on) there is nothing
+        to bring back: the question is whether to close the log, the controllers stay where they are.
+        """
+        units = self._running_units() if self._run_active else []
+        staying = ', '.join(f'{unit.thermostat.title}: {unit.hold_target:.4g} {unit.units}' for unit in units
+                            if unit.hold_target is not None and unit.thermostat is not None)
+        if self._run_active and all(unit.program_over for unit in units):
+            box = QtWidgets.QMessageBox(QtWidgets.QMessageBox.Icon.Question, 'A log is going on',
+                                        'A log is going on. Close it?' + (
+                                            f'\n\nThe temperatures stay where they are ({staying}).' if staying else ''),
+                                        parent=self.mainwindow)
+            close = box.addButton('Close the log', QtWidgets.QMessageBox.ButtonRole.DestructiveRole)
+            cancel = box.addButton(QtWidgets.QMessageBox.StandardButton.Cancel)
+            box.setDefaultButton(cancel)  # (Enter must not end a log of two days)
+            box.setEscapeButton(cancel)
+            box.exec()
+            return 'jump' if box.clickedButton() is close else 'cancel'
         box = QtWidgets.QMessageBox(QtWidgets.QMessageBox.Icon.Question, 'An experiment is going on',
                                     'The thermostats are not at their initial temperature.\n\n'
                                     'Bring them back gradually (the extension stays open until it is done), '
                                     'or set the initial temperatures now and close?\n\n'
                                     '(If you are quitting PyMoDAQ, choose "Set them now": the extension cannot '
-                                    'go on after that.)', parent=self.mainwindow)
+                                    'go on after that.)' + (f'\n\nThese stay where they are: {staying}.'
+                                                            if staying else ''), parent=self.mainwindow)
         now = box.addButton('Set them now and close', QtWidgets.QMessageBox.ButtonRole.DestructiveRole)
         gradually = box.addButton('Bring them back gradually', QtWidgets.QMessageBox.ButtonRole.AcceptRole)
         cancel = box.addButton(QtWidgets.QMessageBox.StandardButton.Cancel)
@@ -1153,8 +1227,8 @@ class ThermoSpectro(CustomExt):
                 unit.begin_run(origin, now)
             self._run_active = True
             self._lock_ui(True)
-            self.set_action_enabled(WorkFlowActions.PAUSE, True)
             self.set_action_checked(WorkFlowActions.PAUSE, False)
+            self._update_run_actions()
             self._ramp_timer.start(int(round(self._update_period() * 1000)))
             self._on_ramp_tick()
         except Exception as e:
@@ -1192,6 +1266,7 @@ class ThermoSpectro(CustomExt):
             unit.program_tick(now)
         self._check_watchdogs()
         self._show_status()
+        self._update_run_actions()
         if self._duration_over() and not self._duration_stop_asked:
             self._duration_stop_asked = True  # (once: a second Stop would offer to leave a returning ramp where it is)
             self.stop_run(reason='The duration of the log is over', ask=False)
@@ -1215,13 +1290,15 @@ class ThermoSpectro(CustomExt):
         for unit in self._running_units():
             found = unit.silent_for(now, self._watchdog_limit(unit))
             if found is not None:
-                unit.fail(*found, halt=unit.runner is not None)  # (a held temperature is logged on: the data may come back)
+                unit.fail(*found, halt=unit.ramping)  # (a held temperature is logged on: the data may come back)
 
     def _experiment_units(self) -> list[Unit]:
         return [unit for unit in self.units if unit.state == UnitState.RUNNING]
 
     def _experiment_over(self) -> bool:
-        """Every ramp is over (the units without ramp only record until Stop), or nothing can be read any more"""
+        """Every ramp is over and none of the units goes on logging after it (the units without ramp only record until
+        Stop; a unit whose ramps are over stays where they ended and goes on, see ``Unit.after_program``), or nothing can
+        be read any more"""
         units = self._experiment_units()
         if not units:
             return False
@@ -1253,11 +1330,43 @@ class ThermoSpectro(CustomExt):
             unit.pause(now, pause)
         self._on_ramp_tick()
 
-    def stop_run(self, *_, reason: str = 'Stopped by the user', ask: bool = True):
-        """Bring the ramps back to their initial value, then end the experiment (a held temperature is left as it is)
+    def _update_run_actions(self):
+        """The buttons which act on the ramps are usable while a ramp is going on (not after it ended, nor on its way to
+        where it was told to end)"""
+        cycling = self._run_active and not self._finishing and any(
+            unit.runner is not None and unit.runner.mode == 'cycling' for unit in self._running_units())
+        self.set_action_enabled(WorkFlowActions.PAUSE, cycling)
+        if not cycling:
+            self.set_action_checked(WorkFlowActions.PAUSE, False)
+        for name in ('end_top', 'end_bottom'):
+            if self.has_action(name):
+                self.set_action_enabled(name, cycling)
 
-        A second call, while they are on their way back, offers to stop right there (unless `ask` is False: the end of
-        the duration of a log does not ask anybody, the log ends when the ramps are back).
+    def finish_ramps(self, at: str = END_AT_INITIAL):
+        """End the ramps at their final value (the top, ``'final'``) or at their initial one (the bottom, ``'initial'``)
+
+        Each ramp which is going on is taken there from where it is, at its speed, and stays: the log goes on, with the
+        controllers held at those temperatures, until Stop is pressed (or the duration of the log is over). It is what
+        happens by itself after the last cycle (see *When the ramps are over*), but whenever it is asked for.
+        """
+        if not self._run_active or self._finishing or self._ending:
+            return
+        now = time.perf_counter()
+        cycling = [unit for unit in self._running_units() if unit.runner is not None and unit.runner.mode == 'cycling']
+        if not cycling:
+            return
+        for unit in cycling:
+            unit.finish_program(now, at)
+        self.set_action_checked(WorkFlowActions.PAUSE, False)  # (the ramps on their way there are not paused any more)
+        self._on_ramp_tick()
+
+    def stop_run(self, *_, reason: str = 'Stopped by the user', ask: bool = True):
+        """Bring the ramps back to their initial value, then end the experiment (a held temperature, and a controller
+        whose ramps are over, are left where they are)
+
+        A ramp on its way to where it was told to end (see :meth:`finish_ramps`) is left to get there. A second call,
+        while they are on their way back, offers to stop right there (unless `ask` is False: the end of the duration of
+        a log does not ask anybody, the log ends when the ramps are back).
         """
         if self._pending_start:
             self._pending_start = False
@@ -1268,13 +1377,16 @@ class ThermoSpectro(CustomExt):
         now = time.perf_counter()
         programmed = [unit for unit in self._running_units() if unit.program is not None and not unit.program_over]
         cycling = [unit for unit in programmed if not unit.returning]
+        # (the ones which were told to end at the top or the bottom, and are on their way there)
+        arriving = [unit for unit in programmed if unit.returning and unit.after_program is not None]
         self._ending = True  # (from now on the log ends when the ramps are over, even if a unit holds a temperature)
         if cycling:
             for unit in cycling:
                 unit.stop_program(now, reason)
-            self.set_action_enabled(WorkFlowActions.PAUSE, False)
-            self.set_action_checked(WorkFlowActions.PAUSE, False)
-            self._on_ramp_tick()
+            self._on_ramp_tick()  # (it disables the buttons of the ramps: they are on their way back)
+            return
+        if programmed and len(arriving) == len(programmed):
+            self._on_ramp_tick()  # (the log ends when they are there: nobody is asked to give up on a leg of a minute)
             return
         if programmed:
             if ask and self._ask_abort_return():
@@ -1324,7 +1436,7 @@ class ThermoSpectro(CustomExt):
                 else:
                     state = unit.runner.state(now)
                     if state.finished and (unit.last_sent is None or abs(unit.last_sent - state.setpoint) > 1e-9):
-                        unit.send_setpoint(state.setpoint)  # the initial temperature goes first
+                        unit.send_setpoint(state.setpoint)  # the temperature the ramps end at (initial or final) goes first
             if self._worker.is_running and not self._worker.drain():
                 # (the saver thread is stopped by stop(): what is still queued would be lost)
                 problems.append('The saver stopped answering: the end of the experiment is missing from the file')
@@ -1352,8 +1464,7 @@ class ThermoSpectro(CustomExt):
             self._lock_ui(False)
             self.set_action_enabled(WorkFlowActions.START, True)
             self.set_action_enabled(WorkFlowActions.STOP, False)
-            self.set_action_enabled(WorkFlowActions.PAUSE, False)
-            self.set_action_checked(WorkFlowActions.PAUSE, False)
+            self._update_run_actions()  # (no run any more: the buttons of the ramps are off)
             self.set_permanent_status(message)
             self.status_signal.emit(message)
         except Exception:

@@ -3,9 +3,8 @@ of another application, a unit which did not answer during the live view, the th
 import numpy as np
 import pytest
 
-from pymodaq_gui.parameter import Parameter
 from pymodaq_plugins_thermospectro.unit import Problem, UnitState
-from pymodaq_plugins_thermospectro.unit_settings import CONTROL_HOLD, CONTROL_RAMP
+from pymodaq_plugins_thermospectro.unit_settings import CONTROL_HOLD, CONTROL_RAMP, END_FINAL
 from pymodaq_plugins_thermospectro.views import UnitView
 
 from test_extension import end_run, run, spy_setpoints, wait_for, wait_for_end
@@ -122,16 +121,35 @@ class TestLoadingSettings:
         ext.set_settings(incomplete)
 
         assert ext.settings is before and ext.settings.child('unit2') is not None
-        assert ext.notifications[-1][0] == 'Settings not loaded' and 'unit2' in ext.notifications[-1][1]
+        title, text, error = ext.notifications[-1]
+        assert title == 'Settings not loaded' and error and 'lacks unit2.' in text  # (the group, not each of its settings)
+        assert 'could not be read' not in text
         assert ext.unit(2).settings.param is ext.settings.child('unit2')
 
-    def test_settings_without_the_new_fields_are_not_loaded(self, ext):
+    def test_settings_saved_before_a_setting_existed_load_and_keep_its_current_value(self, ext):
         old = ext.create_parameter(ext.settings)
-        old.child('unit1', 'ramp', 'control').remove()
+        old.child('unit1', 'ramp', 'end_at').remove()  # (what a file saved before this setting has)
+        old.child('unit1', 'ramp', 'hold_temperature').setValue(7.5)
+        ext.unit(1).settings.child('ramp', 'end_at').setValue(END_FINAL)
 
         ext.set_settings(old)
 
-        assert ext.notifications[-1][0] == 'Settings not loaded' and 'unit1/ramp/control' in ext.notifications[-1][1]
+        settings = ext.unit(1).settings
+        assert settings.end_at == END_FINAL  # (the current value: the file had none)
+        assert settings.hold_temperature == 7.5  # (the others come from the file)
+        names = [child.name() for child in settings.child('ramp').children()]
+        assert names.index('end_at') == names.index('n_cycles') + 1  # (in its place, not at the end)
+        assert settings.param is ext.settings.child('unit1')
+        assert ext.notifications == []
+
+    def test_a_whole_missing_group_of_a_unit_is_filled_too(self, ext):
+        old = ext.create_parameter(ext.settings)
+        old.child('unit2', 'ramp').remove()
+
+        ext.set_settings(old)
+
+        assert ext.unit(2).settings.param.child('ramp').child('n_cycles') is not None
+        assert ext.unit(2).settings.program().n_cycles == 1
 
     def test_the_settings_of_this_application_load(self, ext):
         saved = ext.create_parameter(ext.settings)

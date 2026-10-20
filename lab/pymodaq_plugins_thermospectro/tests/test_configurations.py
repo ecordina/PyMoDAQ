@@ -6,6 +6,7 @@ from pymodaq.utils.gui_utils.loader_utils import create_extension
 from conftest import release
 from pymodaq_plugins_thermospectro import configurations
 from pymodaq_plugins_thermospectro.configurations import CONFIGURATIONS, configuration_of_class
+from pymodaq_plugins_thermospectro.unit_settings import END_INITIAL
 from pymodaq_plugins_thermospectro.extensions import (camera_only, thermo_2spectro, thermo_camera,
                                                       thermo_camera_spectro, thermo_spectro, thermo_spectro_one)
 
@@ -131,6 +132,12 @@ def test_an_application_has_the_settings_and_the_windows_of_its_instruments_only
         for number in set((1, 2, 3)) - set(numbers):
             with pytest.raises(KeyError):
                 extension.unit(number)
+        # the buttons which end the ramps only exist where there is a thermal controller to ramp
+        for name in ('end_top', 'end_bottom'):
+            assert extension.has_action(name) is bool(configuration.thermostats)
+        assert [unit.settings.end_at for unit in extension.units] == [END_INITIAL] * len(numbers)
+        assert extension.settings.child('experiment', 'update_period').opts.get('visible', True) is bool(
+            configuration.thermostats)
     finally:
         window = extension.mainwindow
         extension.quit_fun()

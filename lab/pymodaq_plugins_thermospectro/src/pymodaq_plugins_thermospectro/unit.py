@@ -32,7 +32,8 @@ from pymodaq.utils.managers.modules import ModuleType
 
 from pymodaq_plugins_thermospectro.buffers import TimeSeries
 from pymodaq_plugins_thermospectro.camera import UNITS as PIXELS, Frame, extract_frame
-from pymodaq_plugins_thermospectro.ramp import Phase, RampProgram, RampRunner, RampState, format_duration
+from pymodaq_plugins_thermospectro.ramp import (END_AT_FINAL, Phase, RampProgram, RampRunner, RampState,
+                                                format_duration)
 from pymodaq_plugins_thermospectro.rois import Roi
 from pymodaq_plugins_thermospectro.spectrometers import (Reading, Spectrum, extract_spectrum, set_integration_time,
                                                          wavelength_axis)
@@ -161,6 +162,10 @@ class Unit(QtCore.QObject):
         self.runner: Optional[RampRunner] = None
         self.ramp_state: Optional[RampState] = None
         self.hold_target: Optional[float] = None  # the temperature the thermal controller is held at (a run)
+        #: What the unit does when its ramps are over: 'initial' or 'final' (the controller stays at that value and the
+        #: log goes on) or None (the log ends). A stop, or a failure, makes it None: the log ends once the ramps are back
+        self.after_program: Optional[str] = None
+        self.settled = False  # the ramps are over, the log goes on with the controller held where they ended
         self._last_full = -math.inf  # when the whole spectrum (image) was last saved (time.monotonic())
         self.last_sent: Optional[float] = None
         self.failed = False  # the spectrometer is not read out any more
@@ -235,6 +240,11 @@ class Unit(QtCore.QObject):
     def program_over(self) -> bool:
         """There is no ramp to wait for: it is finished (or it was never there)"""
         return self.runner is None or self.runner.mode in ('done', 'idle')
+
+    @property
+    def ramping(self) -> bool:
+        """The thermal controller follows a ramp (or is on its way to where it was told to stay): not held, not settled"""
+        return self.runner is not None and not self.settled
 
     def problems(self) -> list[str]:
         """What prevents the unit from taking part in the live view or an experiment"""
@@ -528,7 +538,9 @@ class Unit(QtCore.QObject):
         state = self.ramp_state if self.state == UnitState.RUNNING else None
         setpoint, phase, cycle = (state.setpoint, state.phase, state.cycle) if state is not None \
             else (math.nan, None, 0)
-        if state is None and self.state == UnitState.RUNNING and self.hold_target is not None:
+        if self.settled and self.state == UnitState.RUNNING and self.hold_target is not None:
+            setpoint, phase = self.hold_target, Phase.HOLD  # (the ramps are over: held where they ended, cycle: the last)
+        elif state is None and self.state == UnitState.RUNNING and self.hold_target is not None:
             setpoint, phase = self.hold_target, Phase.HOLD  # (held at one temperature)
         interval = self.settings.full_interval
         full_due = interval <= 0 or started_monotonic - self._last_full >= interval - 1e-6
@@ -606,8 +618,11 @@ class Unit(QtCore.QObject):
         self._started_at = self._run_started = time.monotonic()
         self._last_full = -math.inf  # (the first measurement has the whole spectrum)
         self.hold_target = None
+        self.settled = False
+        self.after_program = None
         if self.has_program:
             self.program = self.settings.program()
+            self.after_program = self.settings.after_program
             self.runner = RampRunner(self.program)
             self.ramp_state = self.runner.begin(now, self.temperature.value)
         self.state = UnitState.RUNNING
@@ -627,6 +642,8 @@ class Unit(QtCore.QObject):
         self.runner = None
         self.ramp_state = None
         self.hold_target = None
+        self.settled = False
+        self.after_program = None
         self.settings.child('status', 'phase').setValue(Phase.IDLE.value)
 
     def send_setpoint(self, value: float):
@@ -656,12 +673,29 @@ class Unit(QtCore.QObject):
         if not state.paused and self.thermostat is not None and (
                 self.last_sent is None or abs(state.setpoint - self.last_sent) > 1e-9):
             self.send_setpoint(state.setpoint)
+        if state.finished and not self.settled and self.after_program is not None and self.thermostat is not None:
+            self._settle(state)
         self._show_state(state)
         return state
 
+    def _settle(self, state: RampState):
+        """The ramps are over and the log goes on: the thermal controller stays at the value they ended at
+
+        Its set-point was sent with the last state of the program. From now on the unit is read as one held at that
+        temperature (phase ``hold``, the cycle being the last one), by the watchdog as by the file.
+        """
+        self.settled = True
+        self.hold_target = float(state.setpoint)
+        where = 'final' if self.after_program == END_AT_FINAL else 'initial'
+        logger.info(f'{self.label}: the ramps are over ({state.cycle} cycles), {self.thermostat.title} stays at the '
+                    f'{where} value {self.hold_target:g} {self.units}, the log goes on')
+        self.notice.emit(f'{self.label}: the ramps are over, held at {self.hold_target:g} {self.units}: '
+                         'the log goes on until you stop it')
+
     def _show_state(self, state: RampState):
         status = self.settings.child('status')
-        status.child('phase').setValue(state.phase.value + (' (paused)' if state.paused else ''))
+        phase = Phase.HOLD if self.settled else state.phase
+        status.child('phase').setValue(phase.value + (' (paused)' if state.paused else ''))
         status.child('cycle').setValue(state.cycle)
         status.child('setpoint').setValue(float(state.setpoint))
 
@@ -684,17 +718,37 @@ class Unit(QtCore.QObject):
         """
         if self.runner is None or self.runner.mode != 'cycling':
             return self.ramp_state
+        self.after_program = None  # (stopped: the log ends once the thermostat is back)
         self.ramp_state = self.runner.stop(now)
         logger.info(f'{self.label}: {reason}, returning to the initial temperature')
         self.notice.emit(f'{self.label}: {reason}: returning to the initial temperature')
+        return self.program_tick(now)
+
+    def finish_program(self, now: float, at: str) -> Optional[RampState]:
+        """End the ramps at their final value (the top) or their initial one (the bottom), from wherever they are
+
+        The set-point goes there (at the speed of the ramp, or of the way back) and stays: the log goes on, with the
+        controller held at that temperature, until it is stopped. Does nothing if there is no ramp going on, or if it
+        is already on its way to where it ends (a stop, a failure).
+        """
+        if self.runner is None or self.runner.mode != 'cycling':
+            return self.ramp_state
+        self.after_program = at
+        self.ramp_state = self.runner.finish(now, at)
+        where = 'final' if at == END_AT_FINAL else 'initial'
+        value = self.runner.rest
+        logger.info(f'{self.label}: ending the ramps at the {where} value {value:g} {self.units}')
+        self.notice.emit(f'{self.label}: ending the ramps at the {where} value ({value:g} {self.units}), '
+                         'the log goes on')
         return self.program_tick(now)
 
     def abort_program(self, now: float, jump: bool = False):
         """End the ramp right there (the user said so), or set the initial value at once (``jump``)"""
         if self.runner is None:
             return
-        if jump and self.thermostat is not None and self.program is not None:
-            try:
+        self.after_program = None
+        if jump and self.thermostat is not None and self.program is not None and not self.program_over:
+            try:  # (a controller which stays where the ramps ended, or is held, is left there)
                 self.send_setpoint(self.program.initial)
             except Exception:
                 logger.exception('The initial temperature could not be sent')
@@ -716,6 +770,7 @@ class Unit(QtCore.QObject):
         logger.error(f'{self.label}: {message}')
         if kind == Problem.THERMOSTAT_LOST:
             self._disconnect(self.thermostat)
+            self.after_program = None
             if self.runner is not None:
                 self.ramp_state = self.runner.abort()
             self.thermostat = None
@@ -731,12 +786,12 @@ class Unit(QtCore.QObject):
         """A module of a running experiment which delivered nothing for `limit` seconds: (kind, message), else None"""
         if limit <= 0 or self.state != UnitState.RUNNING or self.failed:
             return None
-        if self.runner is not None and self.runner.mode != 'cycling':
+        if self.ramping and self.runner.mode != 'cycling':
             return None  # on its way back, or over: the thermostat is already being sent to the initial value
         if self.thermostat is not None and Problem.THERMOSTAT_SILENT not in self._reported:
             last = self.temperature.time if self.temperature is not None else self._started_at
             if now - last > limit:
-                if self.runner is None:  # (held at a temperature, or only read: the controller goes on by itself)
+                if not self.ramping:  # (held at a temperature, or only read: the controller goes on by itself)
                     return (Problem.THERMOSTAT_SILENT,
                             f'No temperature from {self.thermostat.title} for {limit:g} s: the log goes on, and '
                             'the controller keeps its set-point')
@@ -778,10 +833,12 @@ class Unit(QtCore.QObject):
     def status_text(self) -> str:
         """A line for the status bar"""
         text = self.label
-        if self.hold_target is not None:
+        if self.settled:
+            text += f': ramps over, held at {self.hold_target:.4g} {self.units}'
+        elif self.hold_target is not None:
             text += f': held at {self.hold_target:.4g} {self.units}'
         state = self.ramp_state
-        if state is not None and self.program is not None:
+        if state is not None and self.program is not None and not self.settled:
             total = self.program.n_cycles or '∞'
             text += f': cycle {state.cycle}/{total} {state.phase.value}'
             text += ' (paused)' if state.paused else f' ({format_duration(state.remaining)} left)'

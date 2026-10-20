@@ -26,7 +26,9 @@ For each spectrometer and for the camera, a *unit*:
   pixels. They are edited on the plot or in the settings and **remembered**: the next log starts with the same ROIs;
 * the thermal controller **holds a temperature** (*Mode: Hold at a temperature*: set it and log) or **runs a ramp**
   (*Mode: Run a ramp*): the ramp is defined by three of initial value, final value, velocity and duration, followed by a
-  wait at the final value, the way back, a wait, repeated as many times as asked;
+  wait at the final value, the way back, a wait, repeated as many times as asked (a **cycle of ramps**). **When the ramps
+  are over the log goes on**, with the controller held where they ended (the initial value, the bottom, or the final value,
+  the top: your choice), until you press Stop;
 * what is **recorded**: the **ROIs**, the **temperature**, and now and then the **full spectrum** / the **full image**
   (each can be left out), in an **h5 file in SWMR mode**, readable by another program while it is written;
 * the plots: the spectrum (the image of the camera) with its ROIs, and the ROIs over time with the temperature on top of
@@ -87,7 +89,8 @@ Using it
    recording anything: use it to set the ROIs (drag a window or its edges, double click to add one, or the *ROI manager*
    tab).
 3. For each thermal controller choose its **Mode**: **Hold at a temperature** (and the temperature) or **Run a ramp**
-   (and its numbers). *Drive it* unticked: the unit only records the temperature of a controller which another unit drives
+   (and its numbers: *Number of cycles*, and **When the ramps are over**: stay at the initial value, at the final value, or
+   end the log). *Drive it* unticked: the unit only records the temperature of a controller which another unit drives
    (a camera and a spectrometer sharing one controller: only one of them drives it).
 4. Under *Experiment*, **Log for**: **Until I stop it** (any number of days) or **For a given time** (and its *Duration* in
    hours, 48 for two days). Tick what is **recorded** (each ROI has its *Record* box, the unit has *The full spectrum* /
@@ -98,19 +101,34 @@ Using it
 A temperature to hold (or a ramp) which is outside the range of the controller (the *Bounds* of its module, filled by
 ``QNW_TC`` with the range of its holder) is refused when you press Start.
 
-**Stop** or the end of the duration: a thermal controller **held at a temperature stays at it** (nothing is sent) and the
-log ends at once; a **ramp** is brought back to its initial temperature at the speed of the ramp, then the log ends (a
-second Stop offers to stop right away). A ramp alone ends by itself when it is over, a log which holds a temperature
-only ends at Stop or when its duration is over. When one unit runs a ramp and another holds a temperature, Stop (or the end
-of the duration) brings the ramp back, then ends the log, and the held controller stays where it is. **Pause** freezes the
-set-point of a ramp (the recording goes on).
+**A cycle of ramps, then the log goes on.** After the last cycle the thermal controller **stays where the ramps ended and the
+log goes on** (the file records those readouts with the phase *hold*, the cycle being the last one) until you press
+**Stop** or the duration of the log is over. *When the ramps are over* (under the ramp of each controller) says where that is:
+
+* **Stay at the initial value (bottom), go on logging** (the default): the way back of the last cycle, then the log goes on there;
+* **Stay at the final value (top), go on logging**: the last cycle stops when the top is reached (no wait there, no way back),
+  the controller stays at the high temperature;
+* **End the log**: the log ends with the ramps (the controller stays at the initial value).
+
+**End at the top** and **End at the bottom** (the arrows of the toolbar, usable while a ramp is going on) do the same whenever
+you click: the temperature goes to the final value (at the speed of the ramp) or back to the initial value (at the speed of the
+way back) from wherever it is, stays there, and the log goes on until Stop. It is how a cycle of ramps which lasts until it is
+stopped (*Number of cycles* 0) is ended at the high or at the low temperature.
+
+**Stop** or the end of the duration ends the log: a thermal controller **held at a temperature stays at it** (nothing is
+sent) and so does one whose ramps are over: the log ends at once; a **ramp** which is going on is brought back to its initial
+temperature at the speed of the way back, then the log ends (a second Stop offers to stop right away). A log which holds a
+temperature, or whose ramps are over, only ends at Stop or when its duration is over. When one unit runs a ramp and another
+holds a temperature, Stop (or the end of the duration) brings the ramp back, then ends the log, and the held controller
+stays where it is. **Pause** freezes the set-point of a ramp (the recording goes on).
 
 If a spectrometer, a camera or a thermal controller does not deliver anything for *Stop if no data for* seconds (30 s, and
 at least a few readouts), a ramp is brought back to its initial temperature; a log which **holds** a temperature (or only
 records) **goes on**, tells it once and tells it again when the data come back, so that a transient glitch does not end a
 log of two days. A module which is *closed* cannot be read any more and ends the log of its unit. If a thermal controller
 itself is closed, nothing can bring it back: the extension says so. When the extension is closed during a ramp, it asks
-whether to set the initial temperatures at once (the proposed answer) or to bring them back gradually.
+whether to set the initial temperatures at once (the proposed answer) or to bring them back gradually; when no ramp is going
+on (the controllers are held, or the ramps are over) there is nothing to bring back: it only asks whether to close the log.
 
 The modes, the ROIs, the recording options, the settings and the file cannot be changed during a log (the buttons showing
 or hiding a ROI or the temperature can be used). The controller is only given set-points: protect it with the bounds of its
@@ -223,7 +241,8 @@ extension switches on). It has one group ``Datalogger000`` with, found by their 
 ``Unit1_Temperature``  the measured temperature
 ``Unit1_Program``      the set-point, the cycle and the phase code of the ramp (``phase_codes`` attribute: idle 0,
                        approach 1, ramp 2, hold final 3, back 4, hold initial 5, return 6, done 7, **hold 8**: the
-                       controller is held at one temperature, the set-point is that temperature)
+                       controller is held at one temperature, the set-point is that temperature: a controller which
+                       was only held, or whose ramps are over, the cycle being then the last one)
 ====================== ===================================================================================
 
 Their arrays are enlarged along a ``time`` axis in epoch seconds, **the same for the groups of a unit**: the time at which

@@ -13,6 +13,11 @@ repeated ``n_cycles`` times (forever if 0). The final value can be above or belo
 does not start at the initial value, an *approach* leg brings it there first. When the program is stopped, a *return*
 leg brings the set-point back to the initial value from wherever it was.
 
+The program ends where ``end_at`` says: at the initial value (the end of the last way back) or at the final one (the
+last cycle stops when the top is reached: there is no way back). It can also be ended at either of them at any time
+(:meth:`RampRunner.finish`): the set-point goes there from where it is, and stays. The value a program has ended at is
+its *rest* value.
+
 The way up is defined by three of its four numbers (:class:`RampSpec`): initial value, final value, velocity and
 duration. The way back is defined in the same way, by default with the same velocity (:class:`BackSpec`).
 """
@@ -38,6 +43,11 @@ class Phase(str, Enum):
 
 #: Phases are saved as integers, this is the code of each of them
 PHASE_CODES = {phase: code for code, phase in enumerate(Phase)}
+
+#: Where a program ends (and rests): at the value the cycles start from, or at the one they go to
+END_AT_INITIAL = 'initial'
+END_AT_FINAL = 'final'
+END_AT = (END_AT_INITIAL, END_AT_FINAL)
 
 
 def format_duration(seconds: float) -> str:
@@ -192,6 +202,9 @@ class RampProgram:
         How long the value is kept at the final and at the initial value
     n_cycles: int
         The number of cycles, 0 to repeat them until the program is stopped
+    end_at: str
+        Where the program ends: ``'initial'`` (after the way back of the last cycle) or ``'final'`` (as soon as the last
+        ramp reaches the final value: the last cycle has no way back, and no wait)
     """
     initial: float
     final: float
@@ -200,6 +213,7 @@ class RampProgram:
     hold_final: float = 0.0
     hold_initial: float = 0.0
     n_cycles: int = 0
+    end_at: str = END_AT_INITIAL
 
     def problems(self) -> list[str]:
         """What prevents to run this program (empty if it is valid)"""
@@ -218,6 +232,8 @@ class RampProgram:
             problems.append('the waiting times cannot be negative')
         if int(self.n_cycles) != self.n_cycles or self.n_cycles < 0:
             problems.append('the number of cycles must be a positive integer, or 0 to run until stopped')
+        if self.end_at not in END_AT:
+            problems.append(f'the program ends at the {" or the ".join(END_AT)} value, not {self.end_at!r}')
         return problems
 
     def validate(self):
@@ -248,13 +264,22 @@ class RampProgram:
         return self.duration_out + self.hold_final + self.duration_back + self.hold_initial
 
     @property
+    def rest(self) -> float:
+        """The value the program ends at, and stays at (when it is not ended elsewhere)"""
+        return self.final if self.end_at == END_AT_FINAL else self.initial
+
+    @property
     def total_duration(self) -> Optional[float]:
         """Duration of all the cycles in s, None when they are repeated until stopped"""
-        return self.n_cycles * self.cycle_duration if self.n_cycles > 0 else None
+        if self.n_cycles <= 0:
+            return None
+        if self.end_at == END_AT_FINAL:  # (the last cycle stops at the top: no wait there, no way back)
+            return (self.n_cycles - 1) * self.cycle_duration + self.duration_out
+        return self.n_cycles * self.cycle_duration
 
 
 def make_program(ramp: RampSpec, back: BackSpec = BackSpec(), hold_final: float = 0.0, hold_initial: float = 0.0,
-                 n_cycles: int = 0) -> RampProgram:
+                 n_cycles: int = 0, end_at: str = END_AT_INITIAL) -> RampProgram:
     """Build the program from what is shown to the user
 
     Parameters
@@ -267,6 +292,8 @@ def make_program(ramp: RampSpec, back: BackSpec = BackSpec(), hold_final: float 
         the waiting times at the final and at the initial value, in minutes
     n_cycles: int
         the number of cycles, 0 to repeat them until stopped
+    end_at: str
+        where the program ends: ``'initial'`` or ``'final'`` (see :class:`RampProgram`)
 
     Raises
     ------
@@ -281,7 +308,7 @@ def make_program(ramp: RampSpec, back: BackSpec = BackSpec(), hold_final: float 
     rate_out = abs(solved.velocity)
     program = RampProgram(initial=solved.initial, final=solved.final, rate_out=rate_out / 60.,
                           rate_back=back.rate(span, rate_out) / 60., hold_final=hold_final * 60.,
-                          hold_initial=hold_initial * 60., n_cycles=n_cycles)
+                          hold_initial=hold_initial * 60., n_cycles=n_cycles, end_at=end_at)
     program.validate()
     return program
 
@@ -342,6 +369,7 @@ class RampRunner:
         self._leg: Optional[tuple[Phase, float, float, float]] = None  # (phase, duration, start, end)
         self._paused_at: Optional[float] = None
         self._last_cycle = 0
+        self._rest = program.rest  # the value the program ends at: where the set-point stays when it is done
 
     # -- timeline ----------------------------------------------------------------------------------------------
 
@@ -359,6 +387,7 @@ class RampRunner:
         self._t0 = now
         self._paused_at = None
         self._last_cycle = 0
+        self._rest = self.program.rest
         return self.state(now)
 
     def stop(self, now: float) -> RampState:
@@ -366,13 +395,29 @@ class RampRunner:
 
         Does nothing if the program is not running or already returning
         """
+        return self.finish(now, END_AT_INITIAL)
+
+    def finish(self, now: float, at: str = END_AT_INITIAL) -> RampState:
+        """End the program at the initial value (the bottom) or at the final one (the top), whenever it is
+
+        The set-point goes there from where it is now, at the speed of the way there (towards the final value) or of
+        the way back (towards the initial one), and stays there: the state is then ``done``, with the set-point at the
+        value the program was ended at. A ramp heading for the final value when it is told to end there does not turn
+        round, one on its way back which is told to end at the final value does.
+
+        Does nothing if the program is not running (idle, done) or already ending (see :attr:`mode`).
+        """
+        if at not in END_AT:
+            raise ValueError(f'a program ends at the {" or the ".join(END_AT)} value, not {at!r}')
         if self._mode != 'cycling':
             return self.state(now)
         current = self.state(now)
         if current.finished:
             return current
+        target = self.program.final if at == END_AT_FINAL else self.program.initial
+        self._rest = target
         self._last_cycle = current.cycle
-        self._leg = self._make_leg(Phase.RETURN, current.setpoint, self.program.initial)
+        self._leg = self._make_leg(Phase.RAMP if at == END_AT_FINAL else Phase.RETURN, current.setpoint, target)
         self._mode = 'return'
         self._t0 = now
         self._paused_at = None
@@ -402,8 +447,13 @@ class RampRunner:
 
     @property
     def mode(self) -> str:
-        """'idle', 'cycling', 'return' or 'done'"""
+        """'idle', 'cycling', 'return' (on its way to the value it was told to end at) or 'done'"""
         return self._mode
+
+    @property
+    def rest(self) -> float:
+        """The value the program ends at (or was told to end at): the set-point once it is done"""
+        return self._rest
 
     # -- evaluation --------------------------------------------------------------------------------------------
 
@@ -414,7 +464,8 @@ class RampRunner:
     def _done(self, cycle: int) -> RampState:
         self._mode = 'done'
         self._paused_at = None
-        return RampState(Phase.DONE, self.program.initial, cycle=cycle, finished=True, remaining=0.0)
+        self._last_cycle = cycle
+        return RampState(Phase.DONE, self._rest, cycle=cycle, finished=True, remaining=0.0)
 
     @staticmethod
     def _along(leg: tuple[Phase, float, float, float], elapsed: float) -> float:
@@ -427,7 +478,7 @@ class RampRunner:
         if self._mode == 'idle':
             return RampState(Phase.IDLE, p.initial)
         if self._mode == 'done':
-            return RampState(Phase.DONE, p.initial, cycle=self._last_cycle, finished=True, remaining=0.0)
+            return RampState(Phase.DONE, self._rest, cycle=self._last_cycle, finished=True, remaining=0.0)
 
         elapsed = self._elapsed(now)
         paused = self._paused_at is not None
@@ -435,7 +486,7 @@ class RampRunner:
         if self._mode == 'return':
             if self._leg is None or elapsed >= self._leg[1]:
                 return self._done(self._last_cycle)
-            return RampState(Phase.RETURN, self._along(self._leg, elapsed), cycle=self._last_cycle,
+            return RampState(self._leg[0], self._along(self._leg, elapsed), cycle=self._last_cycle,
                              remaining=self._leg[1] - elapsed, paused=paused)
 
         # cycling
@@ -451,8 +502,10 @@ class RampRunner:
             return self._done(p.n_cycles)
         w = u - index * period
         cycle = index + 1
-        self._last_cycle = cycle
         end_out = p.duration_out
+        if p.n_cycles > 0 and p.end_at == END_AT_FINAL and cycle == p.n_cycles and w >= end_out:
+            return self._done(p.n_cycles)  # (ended at the top: the last cycle has no wait and no way back)
+        self._last_cycle = cycle
         end_hold = end_out + p.hold_final
         end_back = end_hold + p.duration_back
         if w < end_out:

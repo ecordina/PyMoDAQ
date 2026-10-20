@@ -554,6 +554,202 @@ class TestAbort:
         assert not runner.is_paused
 
 
+class TestEndingAtTheTop:
+    """A program which ends at the final value: the last cycle stops when the top is reached (no wait, no way back)"""
+
+    def test_the_last_cycle_stops_when_the_top_is_reached(self):
+        runner = started(program(n_cycles=2, end_at='final'))
+
+        # the first cycle is complete: up (0-10), wait (10-13), back (13-18), wait (18-22)
+        assert runner.state(11.).phase == Phase.HOLD_FINAL and runner.state(11.).cycle == 1
+        assert runner.state(20.).phase == Phase.HOLD_INITIAL
+        # the second one goes up from 22 to 32, and stops there
+        state = runner.state(31.5)
+        assert state.phase == Phase.RAMP and state.cycle == 2 and state.setpoint == pytest.approx(29.5)
+        assert not state.finished
+        state = runner.state(32.)
+        assert state.finished and state.phase == Phase.DONE and state.setpoint == 30. and state.cycle == 2
+        assert runner.mode == 'done'
+        assert runner.state(1000.).setpoint == 30.  # (it stays there)
+
+    def test_one_cycle_is_a_ramp_to_the_top(self):
+        runner = started(program(n_cycles=1, end_at='final'))
+
+        assert not runner.state(9.9).finished
+        state = runner.state(10.)
+        assert state.finished and state.setpoint == 30. and state.cycle == 1
+
+    def test_the_total_duration_has_no_last_way_back(self):
+        assert program(n_cycles=2, end_at='final').total_duration == pytest.approx(22. + 10.)
+        assert program(n_cycles=2).total_duration == pytest.approx(44.)
+        assert program(n_cycles=0, end_at='final').total_duration is None
+
+    def test_cycles_which_go_on_until_stopped_do_not_end_by_themselves(self):
+        runner = started(program(n_cycles=0, end_at='final'))
+
+        assert not runner.state(10 * 22. + 10.).finished and not runner.state(10 * 22. + 15.).finished
+
+    def test_a_cooling_program_ends_at_its_final_value_below(self):
+        runner = started(program(initial=30., final=20., rate_out=2., rate_back=1., n_cycles=1, end_at='final'),
+                         current=30.)
+
+        assert not runner.state(4.9).finished
+        state = runner.state(5.)
+        assert state.finished and state.setpoint == 20.
+
+    def test_the_rest_value_is_where_the_program_ends(self):
+        assert program().rest == 20. and program(end_at='final').rest == 30.
+        assert started(program(end_at='final')).rest == 30. and started().rest == 20.
+
+    def test_a_program_which_ends_at_the_initial_value_is_as_before(self):
+        runner = started(program(n_cycles=2, end_at='initial'))
+
+        state = runner.state(44.)
+        assert state.finished and state.setpoint == 20. and state.cycle == 2
+
+    def test_an_unknown_end_is_refused(self):
+        assert any('ends at' in problem for problem in program(end_at='middle').problems())
+        with pytest.raises(ValueError):
+            RampRunner(program(end_at='middle'))
+
+    def test_the_program_made_from_what_is_shown_has_it(self):
+        made = make_program(RampSpec(RampMode.VELOCITY, 20., 30., 60.), end_at='final')
+
+        assert made.end_at == 'final' and make_program(RampSpec(RampMode.VELOCITY, 20., 30., 60.)).end_at == 'initial'
+
+
+class TestFinish:
+    """End the program at the top or at the bottom at any time: the set-point goes there from where it is, and stays"""
+
+    def test_at_the_top_the_set_point_goes_there_from_where_it_is(self):
+        runner = started()
+        runner.state(4.)  # 24, going up at 1 a second
+
+        state = runner.finish(4., 'final')
+
+        assert state.phase == Phase.RAMP and state.setpoint == pytest.approx(24.) and not state.finished
+        assert state.remaining == pytest.approx(6.) and runner.mode == 'return' and runner.rest == 30.
+        assert runner.state(7.).setpoint == pytest.approx(27.)
+        state = runner.state(10.)
+        assert state.finished and state.phase == Phase.DONE and state.setpoint == 30. and state.cycle == 1
+        assert runner.mode == 'done' and runner.state(500.).setpoint == 30.  # (it stays)
+
+    def test_at_the_bottom_it_is_the_return_to_the_initial_value(self):
+        runner = started()
+        runner.state(4.)
+
+        state = runner.finish(4., 'initial')
+
+        assert state.phase == Phase.RETURN and state.setpoint == pytest.approx(24.)
+        assert state.remaining == pytest.approx(2.)  # (4 degrees at the 2 a second of the way back)
+        end = runner.state(6.)
+        assert end.finished and end.setpoint == 20. and runner.rest == 20.
+
+    def test_stopping_is_ending_at_the_bottom(self):
+        stopped, finished = started(), started()
+        stopped.state(4.), finished.state(4.)
+
+        stopped.stop(4.)
+        finished.finish(4., 'initial')
+
+        for now in (4., 5., 5.9, 6., 100.):
+            assert stopped.state(now) == finished.state(now)
+
+    def test_at_the_top_from_the_way_back_it_turns_round(self):
+        runner = started()
+        runner.state(15.)  # on the way back: 30 - 2 * (15 - 13) = 26
+
+        state = runner.finish(15., 'final')
+
+        assert state.setpoint == pytest.approx(26.) and state.phase == Phase.RAMP
+        assert state.remaining == pytest.approx(4.)  # (up at 1 a second)
+        assert runner.state(17.).setpoint == pytest.approx(28.)
+        assert runner.state(19.).finished and runner.state(19.).setpoint == 30.
+
+    def test_at_the_top_when_it_is_there_already(self):
+        runner = started()
+        runner.state(11.)  # waiting at 30
+
+        state = runner.finish(11., 'final')
+
+        assert state.finished and state.setpoint == 30. and state.cycle == 1 and runner.mode == 'done'
+
+    def test_at_the_bottom_when_it_is_there_already(self):
+        runner = started()
+        runner.state(20.)  # waiting at 20
+
+        state = runner.finish(20., 'initial')
+
+        assert state.finished and state.setpoint == 20. and runner.mode == 'done'
+
+    def test_the_set_point_does_not_jump_when_it_is_told(self):
+        for at in ('final', 'initial'):
+            for now in (1., 9., 11., 14., 19.):
+                runner = started()
+                before = runner.state(now).setpoint
+
+                after = runner.finish(now, at).setpoint
+
+                assert after == pytest.approx(before, abs=1e-9), (at, now)
+
+    def test_the_cycle_which_was_running_is_remembered(self):
+        runner = started()
+        runner.state(22. + 8.)  # the second cycle, on its way up
+
+        runner.finish(30., 'final')
+
+        assert runner.state(30.).cycle == 2 and runner.state(1000.).cycle == 2
+
+    def test_ending_twice_does_not_restart_the_leg(self):
+        runner = started()
+        runner.state(4.)
+        runner.finish(4., 'final')
+
+        runner.finish(6., 'initial')  # (it is on its way to the top: it goes on)
+
+        assert runner.state(6.).setpoint == pytest.approx(26.) and runner.rest == 30.
+
+    def test_a_program_which_is_over_or_which_did_not_start_cannot_be_ended(self):
+        idle = RampRunner(program())
+        assert idle.finish(0., 'final').phase == Phase.IDLE and idle.mode == 'idle'
+        done = started(program(n_cycles=1))
+        done.state(100.)
+        assert done.finish(101., 'final').finished and done.state(101.).setpoint == 20.  # (it ended at the bottom)
+
+    def test_pausing_does_not_prevent_it(self):
+        runner = started()
+        runner.state(4.)
+        runner.pause(4.)
+
+        state = runner.finish(100., 'final')
+
+        assert state.setpoint == pytest.approx(24.) and not state.paused and not runner.is_paused
+        assert runner.state(103.).setpoint == pytest.approx(27.)
+
+    def test_during_the_approach_it_goes_straight_there(self):
+        runner = started(current=26.)  # 6 above the initial value: the approach takes 3 s
+        assert runner.state(1.).setpoint == pytest.approx(24.)
+
+        state = runner.finish(1., 'final')
+
+        assert state.setpoint == pytest.approx(24.) and state.remaining == pytest.approx(6.)
+        assert runner.state(7.).finished and runner.state(7.).setpoint == 30.
+
+    def test_the_program_can_be_ended_at_the_top_when_it_was_to_end_at_the_bottom_and_the_reverse(self):
+        up = started(program(n_cycles=3, end_at='initial'))
+        down = started(program(n_cycles=3, end_at='final'))
+        up.state(4.), down.state(4.)
+
+        up.finish(4., 'final')
+        down.finish(4., 'initial')
+
+        assert up.state(10.).setpoint == 30. and down.state(6.).setpoint == 20.  # (what is told last wins)
+
+    def test_an_unknown_end_is_refused(self):
+        with pytest.raises(ValueError):
+            started().finish(0., 'middle')
+
+
 @pytest.mark.parametrize('seconds, text', [(0, '0:00'), (59.4, '0:59'), (61, '1:01'), (3600, '1:00:00'),
                                            (3725, '1:02:05'), (-5, '0:00'), (math.nan, '?'), (None, '?'),
                                            (math.inf, '?')])

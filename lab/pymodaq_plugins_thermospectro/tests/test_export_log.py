@@ -7,7 +7,6 @@ import pytest
 
 from pymodaq_data.h5modules.data_saving import DataBundle
 
-from fakes import FakeDetector, FakeManager, FakeThermostat
 from pymodaq_plugins_thermospectro.ramp import PHASE_CODES, Phase
 from pymodaq_plugins_thermospectro.rois import Roi
 from pymodaq_plugins_thermospectro.saving import build_dtes

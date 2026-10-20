@@ -1,6 +1,5 @@
 """The extension with Mock modules: a thermal controller held at one temperature, logs of unlimited or given duration,
 the whole spectrum (image) saved now and then"""
-import numpy as np
 import pytest
 
 from pymodaq_plugins_thermospectro.ramp import PHASE_CODES, Phase

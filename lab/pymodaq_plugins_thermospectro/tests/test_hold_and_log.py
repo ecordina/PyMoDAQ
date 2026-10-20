@@ -1,9 +1,7 @@
 """A thermal controller held at one temperature, a log which lasts until Stop or for a given time, and a whole spectrum
 (image) saved only now and then in a long log"""
-import math
 import time
 
-import numpy as np
 import pytest
 
 from pymodaq_gui.parameter import Parameter
