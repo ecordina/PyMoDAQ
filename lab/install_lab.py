@@ -4,7 +4,8 @@
     python lab/install_lab.py                 # the three plugins, in editable mode
     python lab/install_lab.py --camera --usb  # and what a Thorlabs camera and the pyseabreeze spectrometers need
     python lab/install_lab.py --core          # and PyMoDAQ itself from this repository (with its fixes), not from PyPI
-    python lab/install_lab.py --dry-run       # only show what would be done
+    python lab/install_lab.py --all           # everything: the three plugins, --core, --camera and --usb
+    python lab/install_lab.py --dry-run       # only show what would be done (with any of the above)
 
 The plugins are installed *editable*: the environment uses the files of this folder, so a ``git pull`` is enough to
 update a machine (restart PyMoDAQ afterwards). Run it again when a plugin has new dependencies.
@@ -25,6 +26,9 @@ Qt binding. The pins of the environments of the two computers of the lab are in 
 PyPI: the repository is the release 5.3.8 of PyMoDAQ with the fixes the lab needs (see ``lab/README.md``), so this is how
 a computer gets them. An existing installation of PyMoDAQ is replaced. The packages are given the version
 ``5.3.8+lab``, so that no git tag is needed (a clone of this repository has none).
+
+``--all`` is ``--core --camera --usb``: everything the lab uses, in one command (PyMoDAQ, the Qt binding, the camera and the
+USB packages, the three plugins). It is the one to give on a computer which has nothing yet; ``--dry-run`` shows it first.
 """
 from __future__ import annotations
 
@@ -53,7 +57,7 @@ CORE_VERSION = '5.3.8'
 #: the commands of pymodaq_plugins_thermospectro: each one looks at what is connected and starts its own application
 APPLICATIONS = ('thermo_2spectro', 'thermo_spectro', 'camera', 'thermo_camera', 'thermo_camera_spectro')
 FINAL_HINT = ('\nDone. Start PyMoDAQ again. The command of each application looks for the instruments by itself:\n'
-              f'  {" | ".join(APPLICATIONS)}\n'
+              f'  {" | ".join(APPLICATIONS)}      (lab_apps: their names and what each one is for)\n'
               '  thermo_camera_spectro --mock               (no hardware)\n'
               '  qnw_tc_check COM3 --trace                  (the thermostat)\n'
               '  python lab/pymodaq_plugins_thermospectro/tools/thermospectro_export.py FILE.h5   (csv and tif)')
@@ -117,6 +121,9 @@ def commands(camera: bool = False, usb: bool = False, pymodaq: bool = True, root
 def parse(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     arguments = argparse.ArgumentParser(description=__doc__.split('\n\n')[0], epilog=__doc__.split('\n\n', 1)[1],
                                         formatter_class=argparse.RawDescriptionHelpFormatter)
+    arguments.add_argument('--all', action='store_true',
+                           help='install everything: the same as --core --camera --usb (PyMoDAQ from this repository, '
+                                'the Thorlabs camera packages and the USB packages), then the three plugins')
     arguments.add_argument('--camera', action='store_true',
                            help='also install pymodaq_plugins_thorlabs (the Thorlabs cameras) and tifffile (the tif '
                                 'files of thermospectro_export.py)')
@@ -144,8 +151,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if missing:
         print(f'Not found next to this script: {", ".join(missing)}', file=sys.stderr)
         return 1
+    if args.all:
+        args.core = args.camera = args.usb = True
     if args.core and args.no_pymodaq:
-        print('--core installs PyMoDAQ, --no-pymodaq does not: choose one', file=sys.stderr)
+        print(f'{"--all" if args.all else "--core"} installs PyMoDAQ, --no-pymodaq does not: choose one', file=sys.stderr)
         return 2
     if args.core and not (REPOSITORY / 'packages' / 'pymodaq').is_dir():
         print(f'--core needs the packages folder of the repository, not found in {REPOSITORY}', file=sys.stderr)

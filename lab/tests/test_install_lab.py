@@ -164,6 +164,60 @@ class TestCore:
         assert 'choose one' in capsys.readouterr().err
 
 
+class TestAll:
+    """--all: everything the lab uses, in one command"""
+
+    @staticmethod
+    def dry_run(capsys, *arguments):
+        assert install_lab.main([*arguments, '--dry-run']) == 0
+        return [line.strip() for line in capsys.readouterr().out.splitlines()[1:]]  # (after the line of the environment)
+
+    def test_it_is_the_core_the_camera_and_the_usb_packages(self, capsys):
+        everything = self.dry_run(capsys, '--all')
+
+        assert everything == self.dry_run(capsys, '--core', '--camera', '--usb')
+
+    def test_it_installs_the_core_the_extras_then_the_three_plugins_in_that_order(self, capsys):
+        steps = self.dry_run(capsys, '--all')
+
+        assert len(steps) == 5 + 1 + 3
+        assert all(f'-e {install_lab.REPOSITORY / "packages"}' in step for step in steps[:5])
+        assert steps[5].endswith('install pymodaq_plugins_thorlabs tifffile libusb-package pyusb')
+        assert [plugin in step for plugin, step in zip(install_lab.PLUGINS, steps[6:])] == [True] * 3
+        assert not any('>=5.3' in step or step.endswith('install PyQt6') for step in steps)  # (not from PyPI)
+
+    def test_another_qt_binding_goes_with_it(self, capsys):
+        steps = self.dry_run(capsys, '--all', '--qt', 'pyside6')
+
+        assert 'pymodaq_gui[pyside6]' in steps[3] and 'packages/pymodaq[pyside6]' in steps[4].replace('\\', '/')
+        assert sum('[pyside6]' in step for step in steps) == 2
+
+    def test_a_real_run_gives_the_version_to_the_core_steps_only(self, monkeypatch):
+        calls = []
+
+        class Result:
+            returncode = 0
+
+        monkeypatch.setattr(install_lab.subprocess, 'run', lambda step, **kwargs: calls.append((step, kwargs)) or Result())
+
+        assert install_lab.main(['--all']) == 0
+
+        assert len(calls) == 9 and [step for step, _ in calls[:5]] == install_lab.core_steps()
+        assert all('env' in kwargs for _, kwargs in calls[:5]) and all(kwargs == {} for _, kwargs in calls[5:])
+
+    def test_it_contradicts_no_pymodaq(self, capsys):
+        assert install_lab.main(['--all', '--no-pymodaq', '--dry-run']) == 2
+
+        assert '--all installs PyMoDAQ' in capsys.readouterr().err
+
+    def test_it_is_in_the_help(self, capsys):
+        with pytest.raises(SystemExit) as stop:
+            install_lab.main(['--help'])
+
+        told = capsys.readouterr().out
+        assert stop.value.code == 0 and '--all' in told and 'everything' in told
+
+
 def os_environment_is_empty() -> bool:
     import os
     return not os.environ
@@ -202,7 +256,8 @@ class TestMain:
 
         told = capsys.readouterr().out
         scripts = toml.load(SCRIPT.parent / 'pymodaq_plugins_thermospectro' / 'pyproject.toml')['project']['scripts']
-        assert list(install_lab.APPLICATIONS) == list(scripts)  # (what the hint says is what the package installs)
+        applications = [name for name in scripts if name != 'lab_apps']
+        assert list(install_lab.APPLICATIONS) == applications  # (what the hint says is what the package installs)
         assert all(command in told for command in scripts) and 'qnw_tc_check' in told
         assert 'thermospectro ' not in told and 'Preset' not in told and 'qnw_tc_start' not in told
 

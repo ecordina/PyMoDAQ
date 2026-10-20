@@ -12,7 +12,7 @@ PyMoDAQ files it changes are the two root README files (a note at the top).
 | `pymodaq_plugins_oceaninsight` | the **Seabreeze** spectrometers (Ocean Insight / Ocean Optics): pyseabreeze by default, several spectrometers at once, dark pixels removed, nm axis |
 | `environments/` | the Python packages of the two computers, and how they differ |
 | `docs/HARDWARE.md` | the drivers to install on Windows (spectrometer, Thorlabs camera, temperature controller) |
-| `install_lab.py` | installs the three plugins in the current Python environment |
+| `install_lab.py` | installs the three plugins in the current Python environment; `--all` installs everything the lab uses (PyMoDAQ with its fixes, the camera and USB packages, the plugins) |
 
 ## Put it on a computer
 
@@ -21,19 +21,22 @@ You need a Python 3.10+ environment (3.12 is what the lab uses) and Git.
 ```powershell
 git clone -b lab --single-branch https://github.com/ecordina/PyMoDAQ.git
 cd PyMoDAQ
-python lab/install_lab.py --camera --usb
+python lab/install_lab.py --all
 ```
 
-`install_lab.py` installs PyMoDAQ 5.3 (with PyQt6, `--qt` chooses another Qt binding) if it is missing, then the three plugins **editable** (the environment uses the
-files of this folder). `--camera` adds the Thorlabs camera plugin and `tifffile`, `--usb` adds `libusb-package` and `pyusb`
-for the pyseabreeze spectrometers; `--dry-run` shows what would be done. Then install the drivers of the instruments
+`--all` installs **everything**: PyMoDAQ from this repository (with PyQt6, `--qt` chooses another Qt binding; see "PyMoDAQ itself"
+below), the Thorlabs camera plugin and `tifffile`, `libusb-package` and `pyusb` for the pyseabreeze spectrometers, and the three
+plugins **editable** (the environment uses the files of this folder). It is the same as `--core --camera --usb`; each of
+them can be given alone, and without any of them only the three plugins are installed (and PyMoDAQ from PyPI if the
+environment has none). `--dry-run` shows what would be done. Then install the drivers of the instruments
 (`docs/HARDWARE.md`) and try, without any hardware first:
 
 ```powershell
 thermo_camera_spectro --mock
 ```
 
-(The commands are in the `Scripts` folder of the environment.) Without `--mock` the same command looks at what is connected:
+(The commands are in the `Scripts` folder of the environment; `lab_apps` lists the five applications, `thermo_2spectro`, `thermo_spectro`,
+`camera`, `thermo_camera` and `thermo_camera_spectro`, with what each one is for.) Without `--mock` the same command looks at what is connected:
 it connects what it recognizes and tells what it does not (select the port of a thermal controller, `COM6` for instance, in the
 settings of its module in the Dashboard, click *Ini*), then you press *Start* in the window of the application: it logs
 everything until *Stop*, or for the duration you set (48 h...). Each thermal controller holds a temperature, or runs a cycle
@@ -60,8 +63,8 @@ the five packages of `packages/` (editable, as `5.3.8+lab`, no git tag needed) i
 ```powershell
 cd PyMoDAQ
 git pull
-python lab/install_lab.py --no-pymodaq        # only needed when a dependency changed (--core instead of --no-pymodaq if the
-                                              # computer runs PyMoDAQ from this repository)
+python lab/install_lab.py --all               # only needed when a dependency changed (--no-pymodaq if the computer keeps
+                                              # the PyMoDAQ it has, plus --camera --usb if it uses them)
 ```
 
 then start PyMoDAQ again. Do not use the *Update* button of the Plugin Manager of PyMoDAQ for the lab plugins (it would
