@@ -14,6 +14,10 @@ differs between them.
 The lab plugins are **not** in the lists: they are installed from this repository (`python lab/install_lab.py`), which is
 how a computer gets its updates (`git pull`, then the same command if a dependency changed).
 
+PyMoDAQ itself is the one of each computer (5.3.1 and 5.3.4): `install_lab.py` leaves it alone. The repository holds the release
+5.3.8 with the fixes of the lab (see `lab/README.md`, "PyMoDAQ itself"): `python lab/install_lab.py --core` installs it in
+place of the installed one (editable, as `5.3.8+lab`), which is how a computer gets them.
+
 What the two computers had changed in their installed plugins is now part of the plugins of this repository:
 
 * PC 1: `pymodaq_plugins_oceaninsight/hardware/seabreeze_utils.py` opens the USB devices one at a time (two spectrometers

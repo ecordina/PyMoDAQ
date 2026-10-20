@@ -2,7 +2,8 @@
 
 This is a fork of [PyMoDAQ](https://github.com/PyMoDAQ/PyMoDAQ) (release branch 5.3.x) which also holds, in this `lab/`
 folder, the code that runs on the computers of the lab. **The branch to use is `lab`** (the default branch of the fork):
-it is `5.3.x` of PyMoDAQ plus this folder; the only PyMoDAQ files it changes are the two root README files (a note at the top).
+it is the release 5.3.8 of PyMoDAQ plus this folder and one fix of PyMoDAQ itself (see "PyMoDAQ itself" below); the only other
+PyMoDAQ files it changes are the two root README files (a note at the top).
 
 | folder | what it is |
 |---|---|
@@ -35,14 +36,32 @@ thermo_camera_spectro --mock
 (The commands are in the `Scripts` folder of the environment.) Without `--mock` the same command looks at what is connected:
 it connects what it recognizes and tells what it does not (select the port of a thermal controller, `COM6` for instance, in the
 settings of its module in the Dashboard, click *Ini*), then you press *Start* in the window of the application: it logs
-everything until *Stop*, or for the duration you set (48 h...). See the README of `pymodaq_plugins_thermospectro`.
+everything until *Stop*, or for the duration you set (48 h...). Each thermal controller holds a temperature, or runs a cycle
+of ramps and then **stays at its initial or final temperature while the log goes on** until you press *Stop* (the arrows of
+the toolbar end the ramps at the top or at the bottom whenever you want). See the README of `pymodaq_plugins_thermospectro`.
+
+## PyMoDAQ itself, and its fixes
+
+`install_lab.py` installs PyMoDAQ from PyPI when the environment has none, and otherwise leaves the installed one alone
+(the computers of the lab have 5.3.1 and 5.3.4, see `environments/`). This repository holds the release **5.3.8** of PyMoDAQ
+with the fixes the lab needs, in `packages/`:
+
+* **a hardware initialization which failed is closed before the next one** (branch `fix/failed_hardware_init_5.3.x` of the
+  PyMoDAQ repository, `control_modules/utils.py`): after a failed *Ini* (wrong or busy port, spectrometer not found...) the
+  next attempts initialized the hardware 2, 3... times and quitting the application aborted the process (`QThread:
+  Destroyed while thread is still running`). The PID actuator, which cannot be initialized without its extension, says so.
+
+These fixes are only on a computer which runs PyMoDAQ **from this repository**: `python lab/install_lab.py --core` installs
+the five packages of `packages/` (editable, as `5.3.8+lab`, no git tag needed) in place of the installed PyMoDAQ; then
+`git pull` is enough to update them too. Without `--core` the computer keeps the PyMoDAQ it has, and the fixes are not there.
 
 ## Update a computer
 
 ```powershell
 cd PyMoDAQ
 git pull
-python lab/install_lab.py --no-pymodaq        # only needed when a dependency changed
+python lab/install_lab.py --no-pymodaq        # only needed when a dependency changed (--core instead of --no-pymodaq if the
+                                              # computer runs PyMoDAQ from this repository)
 ```
 
 then start PyMoDAQ again. Do not use the *Update* button of the Plugin Manager of PyMoDAQ for the lab plugins (it would

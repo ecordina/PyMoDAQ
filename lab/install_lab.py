@@ -3,6 +3,7 @@
 
     python lab/install_lab.py                 # the three plugins, in editable mode
     python lab/install_lab.py --camera --usb  # and what a Thorlabs camera and the pyseabreeze spectrometers need
+    python lab/install_lab.py --core          # and PyMoDAQ itself from this repository (with its fixes), not from PyPI
     python lab/install_lab.py --dry-run       # only show what would be done
 
 The plugins are installed *editable*: the environment uses the files of this folder, so a ``git pull`` is enough to
@@ -19,26 +20,36 @@ The plugins (folders next to this script):
 PyMoDAQ itself (release 5.3, with a Qt binding: PyQt6 by default, ``--qt`` chooses another) is installed first if the
 environment does not have it, unless ``--no-pymodaq`` is given; a Qt binding is added if the environment has PyMoDAQ but no
 Qt binding. The pins of the environments of the two computers of the lab are in ``lab/environments``.
+
+``--core`` installs PyMoDAQ from the ``packages`` folder of this repository (the five packages, editable) instead of from
+PyPI: the repository is the release 5.3.8 of PyMoDAQ with the fixes the lab needs (see ``lab/README.md``), so this is how
+a computer gets them. An existing installation of PyMoDAQ is replaced. The packages are given the version
+``5.3.8+lab``, so that no git tag is needed (a clone of this repository has none).
 """
 from __future__ import annotations
 
 import argparse
 import importlib.util
+import os
 import subprocess
 import sys
 from pathlib import Path
 from typing import Optional, Sequence
 
 HERE = Path(__file__).resolve().parent
+REPOSITORY = HERE.parent
 PLUGINS = ('pymodaq_plugins_oceaninsight', 'pymodaq_plugins_quantumnorthwest', 'pymodaq_plugins_thermospectro')
-#: the plugins which are built with setup.py (hatchling and its plugins are not needed, but setuptools is)
-NO_ISOLATION = ('pymodaq_plugins_oceaninsight',)
 CAMERA_PACKAGES = ('pymodaq_plugins_thorlabs', 'tifffile')
 USB_PACKAGES = ('libusb-package', 'pyusb')
 MINIMUM_PYTHON = (3, 10)
 #: the Qt bindings PyMoDAQ can use: the name of the extra of pymodaq, the python module which says it is installed
 QT_BINDINGS = {'pyqt6': 'PyQt6', 'pyside6': 'PySide6', 'pyqt5': 'PyQt5'}
 PYMODAQ_VERSIONS = '>=5.3,<5.4'
+#: the five packages of PyMoDAQ in the folder ``packages`` of the repository, in the order they must be installed in
+CORE_PACKAGES = ('pymodaq_utils', 'pymodaq_data', 'pymodaq_scripting', 'pymodaq_gui', 'pymodaq')
+CORE_WITH_QT = ('pymodaq_gui', 'pymodaq')  # (the packages which have the extra which brings a Qt binding)
+#: the release of PyMoDAQ the repository is based on: the packages are installed as CORE_VERSION+lab
+CORE_VERSION = '5.3.8'
 #: the commands of pymodaq_plugins_thermospectro: each one looks at what is connected and starts its own application
 APPLICATIONS = ('thermo_2spectro', 'thermo_spectro', 'camera', 'thermo_camera', 'thermo_camera_spectro')
 FINAL_HINT = ('\nDone. Start PyMoDAQ again. The command of each application looks for the instruments by itself:\n'
@@ -62,11 +73,32 @@ def has_qt_binding() -> bool:
     return any(installed(module) for module in QT_BINDINGS.values())
 
 
-def commands(camera: bool = False, usb: bool = False, pymodaq: bool = True, root: Path = HERE,
-             have_pymodaq: Optional[bool] = None, qt: str = 'pyqt6', have_qt: Optional[bool] = None) -> list[list[str]]:
-    """The commands which install what is asked for, in the order they must run"""
+def core_steps(qt: str = 'pyqt6', repository: Path = REPOSITORY) -> list[list[str]]:
+    """The commands which install PyMoDAQ from the ``packages`` folder of the repository (editable)"""
     steps = []
-    if pymodaq and not (installed('pymodaq') if have_pymodaq is None else have_pymodaq):
+    for name in CORE_PACKAGES:
+        target = str(repository / 'packages' / name) + (f'[{qt}]' if name in CORE_WITH_QT else '')
+        steps.append(pip('install', '-e', target))
+    return steps
+
+
+def core_environment() -> dict:
+    """The environment of the commands of :func:`core_steps`: the version of the packages is given, not looked for in the
+    tags of git (hatch-vcs: setuptools_scm obeys this variable), which the clone of a fork does not have"""
+    return {**os.environ, 'SETUPTOOLS_SCM_PRETEND_VERSION': f'{CORE_VERSION}+lab'}
+
+
+def commands(camera: bool = False, usb: bool = False, pymodaq: bool = True, root: Path = HERE,
+             have_pymodaq: Optional[bool] = None, qt: str = 'pyqt6', have_qt: Optional[bool] = None,
+             core: bool = False, repository: Path = REPOSITORY) -> list[list[str]]:
+    """The commands which install what is asked for, in the order they must run
+
+    With `core`, PyMoDAQ is the one of the repository (:func:`core_steps`), whatever `pymodaq` says.
+    """
+    steps = []
+    if core:
+        steps.extend(core_steps(qt, repository))
+    elif pymodaq and not (installed('pymodaq') if have_pymodaq is None else have_pymodaq):
         steps.append(pip('install', f'pymodaq[{qt}]{PYMODAQ_VERSIONS}'))  # (PyMoDAQ has no Qt binding without the extra)
     elif pymodaq and not (has_qt_binding() if have_qt is None else have_qt):
         steps.append(pip('install', QT_BINDINGS[qt]))
@@ -78,10 +110,7 @@ def commands(camera: bool = False, usb: bool = False, pymodaq: bool = True, root
     if extras:
         steps.append(pip('install', *extras))
     for plugin in PLUGINS:
-        arguments = ['install', '-e', str(root / plugin)]
-        if plugin in NO_ISOLATION:
-            arguments.insert(1, '--no-build-isolation')
-        steps.append(pip(*arguments))
+        steps.append(pip('install', '-e', str(root / plugin)))
     return steps
 
 
@@ -95,6 +124,10 @@ def parse(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
                            help='also install libusb-package and pyusb (the pyseabreeze spectrometers on Windows)')
     arguments.add_argument('--no-pymodaq', action='store_true',
                            help='do not install PyMoDAQ (and a Qt binding) if it is missing')
+    arguments.add_argument('--core', action='store_true',
+                           help='install PyMoDAQ from the packages folder of this repository (editable, with the fixes '
+                                f'of the lab, version {CORE_VERSION}+lab) instead of PyPI: it replaces any installed '
+                                'PyMoDAQ')
     arguments.add_argument('--qt', choices=sorted(QT_BINDINGS), default='pyqt6',
                            help='the Qt binding to install if there is none (default: pyqt6, the one of the lab)')
     arguments.add_argument('--dry-run', action='store_true', help='only show the commands')
@@ -111,13 +144,20 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if missing:
         print(f'Not found next to this script: {", ".join(missing)}', file=sys.stderr)
         return 1
-    steps = commands(args.camera, args.usb, not args.no_pymodaq, qt=args.qt)
+    if args.core and args.no_pymodaq:
+        print('--core installs PyMoDAQ, --no-pymodaq does not: choose one', file=sys.stderr)
+        return 2
+    if args.core and not (REPOSITORY / 'packages' / 'pymodaq').is_dir():
+        print(f'--core needs the packages folder of the repository, not found in {REPOSITORY}', file=sys.stderr)
+        return 1
+    steps = commands(args.camera, args.usb, not args.no_pymodaq, qt=args.qt, core=args.core)
+    core = core_steps(args.qt) if args.core else []
     print(f'Environment: {sys.executable}')
     for step in steps:
-        print('  ' + ' '.join(step))
+        print('  ' + ' '.join(step) + (f'    (version {CORE_VERSION}+lab)' if step in core else ''))
         if args.dry_run:
             continue
-        result = subprocess.run(step)
+        result = subprocess.run(step, env=core_environment()) if step in core else subprocess.run(step)
         if result.returncode != 0:
             print(f'Failed: {" ".join(step)}', file=sys.stderr)
             return result.returncode
