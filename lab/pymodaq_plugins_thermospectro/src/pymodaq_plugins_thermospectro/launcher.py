@@ -60,7 +60,8 @@ def make_parser(command: str) -> argparse.ArgumentParser:
                     f'extension of the application, looks at what is connected to the computer, connects what it '
                     f'recognizes and tells which instruments it did not: select them in the settings of their module '
                     f'in the Dashboard, click their Ini button, then press Live or Start in the extension. Nothing is '
-                    f'started by the command itself.')
+                    f'started by the command itself.',
+        epilog='lab_apps lists the applications of the lab.')
     parser.add_argument('--mock', action='store_true',
                         help='no hardware: every instrument is a Mock module (a Mock 1D detector, a Mock 2D detector, '
                              'a Mock actuator with the axis Temp) and nothing is looked for')

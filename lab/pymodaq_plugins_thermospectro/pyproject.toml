@@ -55,6 +55,7 @@ thermo_spectro = "pymodaq_plugins_thermospectro.launcher:thermo_spectro"  # 1 sp
 camera = "pymodaq_plugins_thermospectro.launcher:camera"  # 1 camera
 thermo_camera = "pymodaq_plugins_thermospectro.launcher:thermo_camera"  # 1 camera, 1 thermal controller
 thermo_camera_spectro = "pymodaq_plugins_thermospectro.launcher:thermo_camera_spectro"  # 1 camera, 1 spectrometer, 1 thermal controller
+lab_apps = "pymodaq_plugins_thermospectro.apps:main"  # the names of the applications above
 
 [build-system]
 requires = [

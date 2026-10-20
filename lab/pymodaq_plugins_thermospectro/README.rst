@@ -14,6 +14,8 @@ command                               instruments
 ``thermo_camera_spectro``             one camera and one spectrometer, one thermal controller for both
 ====================================  ===========================================================================
 
+(``lab_apps`` prints this list, with the other commands of the lab; ``lab_apps --names`` only the names.)
+
 Each one has the settings and the windows of its instruments and nothing else (``camera`` has nothing about a
 temperature, ``thermo_spectro`` nothing about a camera...). They are *dashboard extensions* (one class each, the base
 class is ``ThermoSpectro``, see ``configurations.py``) started by a command which looks for the instruments.

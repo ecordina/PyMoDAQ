@@ -86,8 +86,10 @@ class TestCommandLine:
         import toml
         project = toml.load(PACKAGE.parents[1] / 'pyproject.toml')
 
-        assert project['project']['scripts'] == {
-            command: f'pymodaq_plugins_thermospectro.launcher:{command}' for command in COMMANDS}
+        scripts = dict(project['project']['scripts'])
+
+        assert scripts.pop('lab_apps') == 'pymodaq_plugins_thermospectro.apps:main'  # (the list of the applications)
+        assert scripts == {command: f'pymodaq_plugins_thermospectro.launcher:{command}' for command in COMMANDS}
         assert 'thermospectro' not in project['project']['scripts']  # (the command of the presets is gone)
 
     def test_the_presets_are_gone(self):
