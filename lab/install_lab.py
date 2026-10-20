@@ -92,13 +92,29 @@ def core_environment() -> dict:
     return {**os.environ, 'SETUPTOOLS_SCM_PRETEND_VERSION': f'{CORE_VERSION}+lab'}
 
 
+def headless_opencv_steps() -> list[list[str]]:
+    """The commands which put ``opencv-python-headless`` in place of ``opencv-python``
+
+    ``pymodaq_plugins_thorlabs`` requires ``opencv-python``. On Linux and macOS that wheel ships a Qt 5 and, when it is
+    imported (PyMoDAQ imports it with the plugins, before the window is made), points Qt to it: PyQt6 then cannot start
+    (*Could not load the Qt platform plugin "xcb" in ".../cv2/qt/plugins"*), for every PyMoDAQ command. The headless
+    wheel is the same ``cv2`` without the GUI. Both cannot be installed together (they share the folder ``cv2``): the
+    first one goes, then the other comes. ``pip check`` then says that the plugin wants ``opencv-python``: it is the one
+    thing it says, and it is not a problem.
+    """
+    return [pip('uninstall', '-y', 'opencv-python'), pip('install', 'opencv-python-headless')]
+
+
 def commands(camera: bool = False, usb: bool = False, pymodaq: bool = True, root: Path = HERE,
              have_pymodaq: Optional[bool] = None, qt: str = 'pyqt6', have_qt: Optional[bool] = None,
-             core: bool = False, repository: Path = REPOSITORY) -> list[list[str]]:
+             core: bool = False, repository: Path = REPOSITORY, platform: Optional[str] = None) -> list[list[str]]:
     """The commands which install what is asked for, in the order they must run
 
-    With `core`, PyMoDAQ is the one of the repository (:func:`core_steps`), whatever `pymodaq` says.
+    With `core`, PyMoDAQ is the one of the repository (:func:`core_steps`), whatever `pymodaq` says. With `camera`, on
+    a system which is not Windows (`platform`, ``sys.platform`` by default), the last commands give the computer the
+    headless OpenCV (:func:`headless_opencv_steps`).
     """
+    platform = sys.platform if platform is None else platform
     steps = []
     if core:
         steps.extend(core_steps(qt, repository))
@@ -115,6 +131,8 @@ def commands(camera: bool = False, usb: bool = False, pymodaq: bool = True, root
         steps.append(pip('install', *extras))
     for plugin in PLUGINS:
         steps.append(pip('install', '-e', str(root / plugin)))
+    if camera and not platform.startswith('win'):
+        steps.extend(headless_opencv_steps())  # (after everything: nothing may bring opencv-python back before it)
     return steps
 
 

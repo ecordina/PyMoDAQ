@@ -30,6 +30,16 @@ needs the driver of its family:
 Check that it is seen: `python -c "from pylablib.devices import Thorlabs; print(Thorlabs.list_cameras_tlcam())"` (TSI) or
 `python -c "from pylablib.devices import uc480; print(uc480.list_cameras())"` (uc480).
 
+**On Linux (and macOS), OpenCV must be the headless one.** `pymodaq_plugins_thorlabs` requires `opencv-python`, whose wheel
+ships its own Qt 5 and points Qt to it when it is imported (PyMoDAQ imports it with the plugins, before its window is made):
+PyMoDAQ and every command of the lab then stop at *Could not load the Qt platform plugin "xcb" in ".../cv2/qt/plugins" even
+though it was found*. `install_lab.py --camera` (and `--all`) puts `opencv-python-headless`, the same `cv2` without the
+GUI, in place of it. By hand: `python -m pip uninstall -y opencv-python` then `python -m pip install opencv-python-headless`
+(`pip check` then says that the plugin wants `opencv-python`: it can be ignored). Updating `pymodaq_plugins_thorlabs` with pip
+brings `opencv-python` back: run the two commands again, or `install_lab.py --camera`. (The lab commands also take the
+folders of `cv2` out of `QT_QPA_PLATFORM_PLUGIN_PATH` before they make their window, so they start even then; the
+`dashboard` command of PyMoDAQ does not.) Windows is not concerned.
+
 ## The temperature controller (Quantum Northwest)
 
 * Plug it in: Windows installs the FTDI driver by itself (otherwise the FTDI VCP driver, or the one in the software of

@@ -28,7 +28,8 @@ python lab/install_lab.py --all
 below), the Thorlabs camera plugin and `tifffile`, `libusb-package` and `pyusb` for the pyseabreeze spectrometers, and the three
 plugins **editable** (the environment uses the files of this folder). It is the same as `--core --camera --usb`; each of
 them can be given alone, and without any of them only the three plugins are installed (and PyMoDAQ from PyPI if the
-environment has none). `--dry-run` shows what would be done. Then install the drivers of the instruments
+environment has none; with the camera, on Linux and macOS, `opencv-python` is replaced by `opencv-python-headless`, see
+`docs/HARDWARE.md`). `--dry-run` shows what would be done. Then install the drivers of the instruments
 (`docs/HARDWARE.md`) and try, without any hardware first:
 
 ```powershell

@@ -66,6 +66,28 @@ class TestCommands:
 
         assert install_lab.has_qt_binding() is False
 
+    def test_the_camera_gets_the_headless_opencv_on_linux_and_macos(self, tmp_path):
+        """opencv-python (required by the Thorlabs plugin) ships a Qt 5 there, which stops PyQt6 from starting"""
+        for platform in ('linux', 'darwin'):
+            steps = names(install_lab.commands(camera=True, root=tmp_path, have_pymodaq=True, have_qt=True,
+                                               platform=platform))
+
+            assert steps[0] == 'install pymodaq_plugins_thorlabs tifffile'
+            assert steps[-2:] == ['uninstall -y opencv-python', 'install opencv-python-headless']  # (after the plugins)
+            assert steps[-3].startswith('install -e ') and len(steps) == 1 + 3 + 2
+
+    def test_not_on_windows_nor_without_the_camera(self, tmp_path):
+        windows = names(install_lab.commands(camera=True, root=tmp_path, have_pymodaq=True, have_qt=True,
+                                             platform='win32'))
+        without = names(install_lab.commands(root=tmp_path, have_pymodaq=True, have_qt=True, platform='linux'))
+
+        assert not any('opencv' in step for step in windows + without) and len(windows) == 1 + 3 and len(without) == 3
+
+    def test_the_usb_packages_alone_do_not_touch_opencv(self, tmp_path):
+        steps = names(install_lab.commands(usb=True, root=tmp_path, have_pymodaq=True, have_qt=True, platform='linux'))
+
+        assert not any('opencv' in step for step in steps)
+
     def test_the_plugins_of_the_repository_are_all_there(self):
         for plugin in install_lab.PLUGINS:
             assert (SCRIPT.parent / plugin).is_dir()
@@ -95,7 +117,7 @@ class TestCore:
 
     def test_the_core_comes_before_everything_else_and_replaces_the_pypi_installation(self, tmp_path):
         steps = names(install_lab.commands(camera=True, root=tmp_path, repository=tmp_path, core=True,
-                                           have_pymodaq=False, have_qt=False))
+                                           have_pymodaq=False, have_qt=False, platform='win32'))
 
         assert len(steps) == 5 + 1 + 3
         assert [step.split(' ')[1] for step in steps[:5]] == ['-e'] * 5 and 'pymodaq_utils' in steps[0]
@@ -180,7 +202,7 @@ class TestAll:
     def test_it_installs_the_core_the_extras_then_the_three_plugins_in_that_order(self, capsys):
         steps = self.dry_run(capsys, '--all')
 
-        assert len(steps) == 5 + 1 + 3
+        assert len(steps) == 5 + 1 + 3 + (0 if sys.platform.startswith('win') else 2)  # (the headless opencv at the end)
         assert all(f'-e {install_lab.REPOSITORY / "packages"}' in step for step in steps[:5])
         assert steps[5].endswith('install pymodaq_plugins_thorlabs tifffile libusb-package pyusb')
         assert [plugin in step for plugin, step in zip(install_lab.PLUGINS, steps[6:])] == [True] * 3
@@ -202,7 +224,8 @@ class TestAll:
 
         assert install_lab.main(['--all']) == 0
 
-        assert len(calls) == 9 and [step for step, _ in calls[:5]] == install_lab.core_steps()
+        assert len(calls) == 9 + (0 if sys.platform.startswith('win') else 2)
+        assert [step for step, _ in calls[:5]] == install_lab.core_steps()
         assert all('env' in kwargs for _, kwargs in calls[:5]) and all(kwargs == {} for _, kwargs in calls[5:])
 
     def test_it_contradicts_no_pymodaq(self, capsys):

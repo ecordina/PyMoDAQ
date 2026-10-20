@@ -20,10 +20,12 @@ from __future__ import annotations
 
 import argparse
 import functools
+import os
 import random
 import sys
 import threading
 import time
+from pathlib import Path
 from typing import Any, Optional, Sequence
 
 from qtpy import QtCore
@@ -45,6 +47,39 @@ INDEX_NAMES = ('camera_index', 'index', 'camera_number', 'device_index')
 CHOICE_NAMES = ('camera', 'camera_list', 'camera_name', 'camera_id', 'device', 'devices')
 PLUGIN_HINTS = {'Thorlabs_TSI': 'python lab/install_lab.py --camera', 'UC480': 'python lab/install_lab.py --camera',
                 'Seabreeze': 'python lab/install_lab.py', 'QNW_TC': 'python lab/install_lab.py'}
+#: The variables with which opencv-python (the version with a GUI) points Qt to the Qt 5 it ships
+OPENCV_QT_VARIABLES = ('QT_QPA_PLATFORM_PLUGIN_PATH', 'QT_QPA_FONTDIR')
+
+
+def drop_opencv_qt_paths() -> list[str]:
+    """Undo what ``import cv2`` does to the environment of Qt (opencv-python, the version with a GUI, on Linux)
+
+    That wheel ships its own Qt 5 and, when it is imported, sets ``QT_QPA_PLATFORM_PLUGIN_PATH`` and ``QT_QPA_FONTDIR`` to
+    it. PyMoDAQ imports it (the plugin of the Thorlabs cameras does) before the application is created: Qt 6 then loads
+    the platform plugin of Qt 5 and the application does not start (*Could not load the Qt platform plugin "xcb" in
+    ".../cv2/qt/plugins" even though it was found*). The folders of ``cv2`` are taken out of these variables, the others
+    are left (a value the user set is kept).
+
+    Returns
+    -------
+    list of str
+        The names of the variables which were changed
+    """
+    changed = []
+    for name in OPENCV_QT_VARIABLES:
+        value = os.environ.get(name)
+        if not value:
+            continue
+        parts = value.split(os.pathsep)
+        kept = [part for part in parts if 'cv2' not in Path(part).parts]
+        if len(kept) == len(parts):
+            continue
+        if kept:
+            os.environ[name] = os.pathsep.join(kept)
+        else:
+            del os.environ[name]
+        changed.append(name)
+    return changed
 
 
 # ----------------------------------------------------------------------------------------------------------------------
@@ -284,6 +319,9 @@ class Launcher:
         from pymodaq_gui.qt_utils import mkQApp
         from pymodaq.dashboard import create_load_dashboard  # (it registers the extensions, which takes a moment)
 
+        changed = drop_opencv_qt_paths()  # (importing the plugins may have imported cv2, before Qt makes its application)
+        if changed:
+            logger.info(f'opencv-python had pointed {", ".join(changed)} to its own Qt: removed, PyQt cannot use it')
         self.app = app or mkQApp('Dashboard')
         self.shared_ui, self.dashboard = create_load_dashboard(show_dashboard=True)
         self.app.aboutToQuit.connect(self.close)  # (otherwise Qt aborts: "QThread: Destroyed while ... running")

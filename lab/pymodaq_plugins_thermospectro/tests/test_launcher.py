@@ -4,6 +4,7 @@ Without hardware: the instruments are Mock modules (``--mock``), the simulated Q
 (``sim://...``), or what a fake detector says is connected. The Dashboard is real (offscreen).
 """
 import copy
+import os
 import sys
 import threading
 import time
@@ -96,6 +97,70 @@ class TestCommandLine:
         assert not (PACKAGE / 'resources' / 'presets').exists()
         assert not (PACKAGE.parents[1] / 'tools' / 'make_camera_presets.py').exists()
         assert not hasattr(launcher, 'install_presets') and not hasattr(launcher, 'PRESETS_FOLDER')
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+# the Qt of opencv-python
+# ----------------------------------------------------------------------------------------------------------------------
+
+CV2_PLUGINS = '/env/lib/python3.12/site-packages/cv2/qt/plugins'
+CV2_FONTS = '/env/lib/python3.12/site-packages/cv2/qt/fonts'
+
+
+class TestTheQtOfOpencv:
+    """opencv-python (the version with a GUI) points Qt to the Qt 5 it ships when it is imported, which PyMoDAQ does with
+    the plugin of the Thorlabs cameras before it makes its application: PyQt6 could not start on Linux ("Could not load
+    the Qt platform plugin xcb in .../cv2/qt/plugins")"""
+
+    def test_the_folders_of_cv2_are_taken_out(self, monkeypatch):
+        monkeypatch.setenv('QT_QPA_PLATFORM_PLUGIN_PATH', CV2_PLUGINS)
+        monkeypatch.setenv('QT_QPA_FONTDIR', CV2_FONTS)
+
+        changed = launcher.drop_opencv_qt_paths()
+
+        assert changed == ['QT_QPA_PLATFORM_PLUGIN_PATH', 'QT_QPA_FONTDIR']
+        assert 'QT_QPA_PLATFORM_PLUGIN_PATH' not in os.environ and 'QT_QPA_FONTDIR' not in os.environ
+
+    def test_what_the_user_set_is_kept(self, monkeypatch):
+        monkeypatch.setenv('QT_QPA_PLATFORM_PLUGIN_PATH', '/opt/qt6/plugins')
+        monkeypatch.delenv('QT_QPA_FONTDIR', raising=False)
+
+        assert launcher.drop_opencv_qt_paths() == [] and os.environ['QT_QPA_PLATFORM_PLUGIN_PATH'] == '/opt/qt6/plugins'
+
+    def test_in_a_list_only_the_folders_of_cv2_go(self, monkeypatch):
+        monkeypatch.setenv('QT_QPA_PLATFORM_PLUGIN_PATH', os.pathsep.join(['/opt/qt6/plugins', CV2_PLUGINS, '/usr/lib/qt']))
+
+        assert launcher.drop_opencv_qt_paths() == ['QT_QPA_PLATFORM_PLUGIN_PATH']
+        assert os.environ['QT_QPA_PLATFORM_PLUGIN_PATH'] == os.pathsep.join(['/opt/qt6/plugins', '/usr/lib/qt'])
+
+    def test_nothing_is_set_nothing_changes(self, monkeypatch):
+        monkeypatch.delenv('QT_QPA_PLATFORM_PLUGIN_PATH', raising=False)
+        monkeypatch.delenv('QT_QPA_FONTDIR', raising=False)
+
+        assert launcher.drop_opencv_qt_paths() == []
+
+    def test_a_name_which_only_looks_like_it_is_not_taken(self, monkeypatch):
+        monkeypatch.setenv('QT_QPA_PLATFORM_PLUGIN_PATH', '/opt/qt6/cv2_tools/plugins')  # (the folder is called cv2_tools)
+        monkeypatch.delenv('QT_QPA_FONTDIR', raising=False)
+
+        assert launcher.drop_opencv_qt_paths() == []
+
+    def test_the_application_is_made_without_them(self, make, monkeypatch):
+        from pymodaq_gui import qt_utils
+        seen = []
+        original = qt_utils.mkQApp
+
+        def spy(*args, **kwargs):
+            seen.append((os.environ.get('QT_QPA_PLATFORM_PLUGIN_PATH'), os.environ.get('QT_QPA_FONTDIR')))
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(qt_utils, 'mkQApp', spy)
+        monkeypatch.setenv('QT_QPA_PLATFORM_PLUGIN_PATH', CV2_PLUGINS)  # (as `import cv2` leaves them)
+        monkeypatch.setenv('QT_QPA_FONTDIR', CV2_FONTS)
+
+        make('thermo_camera', ['--mock', '--camera-plugin', 'Mock'])
+
+        assert seen == [(None, None)]  # (when Qt chose its platform plugin)
 
 
 # ----------------------------------------------------------------------------------------------------------------------
