@@ -20,9 +20,11 @@ one unit drives it (*Drive it*), the other only records its temperature.
    must be longer than the integration time, times the *Naverage* of the module if it averages. Use it to set the ROIs.
 3. For each thermal controller choose its **Mode**: *Hold at a temperature* (and the temperature) or *Run a ramp*.
 4. Under *Experiment*, **Log for**: *Until I stop it* or *For a given time* (and its **Duration** in hours: 48 for two
-   days). Tick what is recorded to disk, choose the folder in the *Saving* tab.
+   days). Tick what is recorded to disk. In the *Saving* tab choose the folder and the name of the file and write what
+   you want to remember of the experiment: its title, the sample, the operator and the protocol (see *The Saving tab*).
 5. Click **Start**: everything is recorded until **Stop**, or the end of the duration. The status bar shows the time
-   elapsed and left.
+   elapsed and left. While it runs, **note what you observe** (the field of the toolbar, or the *Saving* tab): each
+   observation is saved in the file with its time.
 6. **Stop**: a controller **held at a temperature stays at it** and the log ends at once; so does one whose ramps are over
    (it stays where they ended); a **ramp** which is going on is brought back to its initial value (a second Stop offers to
    stop right there), then the log ends (with one unit on a ramp and another holding a temperature, Stop brings the ramp
@@ -54,6 +56,15 @@ is plain json: it can be copied to another computer.
 
 Each ROI has two boxes: **Record** (its value is saved in the file) and **Plot** (it is drawn). They are
 independent. The buttons above the plot of the ROIs do the same as *Plot*.
+
+The wavelengths of a spectrometer are always in **nm** (the axis does not switch to *knm* beyond 1000 nm). The **color of
+a ROI** is the color of the light at the wavelength in the middle of its window: a ROI between 440 and 460 nm is blue (450
+nm), one around 532 nm is green, one between 640 and 660 nm is red. It is the color of its window on the spectrum, of its
+curve, of its button and of its number in the ROI manager, and it follows the window while you drag it. Beyond the
+visible range the color is the violet (ultraviolet, below 380 nm) or the deep red (infrared, above 780 nm) of its end of
+the rainbow, greyer the further it is, so that two ROIs there still have their own color. The colors are made lighter on
+a dark background and darker on a light one when they could not be seen well. When the spectrum is not in nm (a spectrometer without wavelengths) and for the
+rectangles of a camera, each ROI has a color of its own from a palette.
 
 ## Hold at a temperature, or a ramp
 
@@ -111,6 +122,32 @@ the same ones), which are fitted to the size of the image when the first image c
   it (`Unit3_Image`) and say how often with **Full image every** (60 s by default; 0: at each readout). The ROIs and the temperature are recorded as for a spectrometer
   (`Unit3_ROIs`, `Unit3_Temperature`, `Unit3_Program`).
 
+## The Saving tab
+
+It says where each experiment is saved, what the file is called and what you write about the experiment. What you type
+there is **remembered from one session to the next**, but for the title and the sample: they describe one experiment, and
+the ones of yesterday are not those of the one which starts.
+
+* **Folder** (*Browse...* opens a dialog): it is made if it does not exist. It is checked when you press Start: if nothing
+  can be written there the experiment does not start, and the message says why.
+* **Name**: the name of the file, without `.h5` (what a file name cannot hold, such as `/` or `:`, becomes `_`).
+  **Add the date and the time to the name** (on by default) makes `Name_20261022_153012.h5`; without it the file is
+  `Name.h5`. **A file is never replaced**: if it exists, the next one is `Name_001.h5`. **Put the file in folders of the year
+  and the day** makes `2026/20261022/` in the folder, the way PyMoDAQ arranges its files. *Next file* shows what the next
+  file will look like (`YYYYMMDD_HHMMSS` is the date and the time when it starts), *Current file* the one which is being
+  written, or the last one.
+* **The experiment**: a *title*, the *sample*, the *operator* and the *protocol* (a text of any length, up to a million
+  characters: what is done, how, with what). They are written in the file when the log starts, and cannot be changed until it ends (these fields are
+  locked): use the observations for what happens during the log.
+* **Observations**: while a log runs, type what you notice (the door was opened, the sample changed color...) in the field of
+  this tab or in the one of the toolbar and press **Enter**. It is saved in the file at once, with its time, and listed in
+  the tab with the time of the day and the time since the start; the list is emptied when the next log starts (the
+  observations are in the file of their experiment). An observation has at most a thousand characters. They can be written
+  only while a log runs and *Do logging* is on (otherwise nothing could be saved: the fields are greyed, and the tab says why).
+* **The h5 file (advanced)**, closed at first: the settings of PyMoDAQ's h5 saver (backend, compression...).
+
+The folder, the name and the experiment are locked during a log (the file exists from its start); the observations are not.
+
 ## The plots
 
 For each unit, a small plot of the **spectrum** (the **image** of a camera) with its ROIs, and a plot of the **ROIs** over time with the
@@ -126,12 +163,12 @@ every*) seconds, which keeps a long log small (0: at each readout).
 Independently of each other, per unit: **the full spectrum** (the full image of a camera), **each ROI**, **the temperature** (with the set-point,
 the cycle and the phase of the ramp: after the ramps, the phase is `hold` and the cycle the last one). Untick the *Do logging* button of the toolbar to record nothing at all.
 
-Each experiment is written in **a new h5 file** in the folder of the *Saving* tab, in **SWMR** mode (single writer,
-multiple readers): another program can open it while it is written, for instance:
+Each experiment is written in **a new h5 file**, in the folder and with the name of the *Saving* tab (`Dataset_20261022_153012.h5` by
+default), in **SWMR** mode (single writer, multiple readers): another program can open it while it is written, for instance:
 
 ```python
 import h5py
-with h5py.File('Dataset_20260101_000.h5', 'r', swmr=True) as f:
+with h5py.File('Dataset_20261022_153012.h5', 'r', swmr=True) as f:
     ...  # refresh() a dataset to see what was added since
 ```
 
@@ -141,6 +178,16 @@ The file has one group `Datalogger000`, and in it one group per kind of data, fo
 the time at which the readout started); the attributes of the groups tell the spectrometer and the thermostat, the
 integration and readout times and, for the ROIs, their windows. The codes of `Unit1_Program` phases are in its
 `phase_codes` attribute. The file can be loaded with the H5 browser or `pymodaq_data.h5modules.data_saving.DataLoader`.
+
+What you wrote about the experiment is in the attributes of the group `RawData` (`experiment_title`, `sample`,
+`operator`, `protocol`, and `application`, the command which made the file), written the way PyMoDAQ writes its attributes (a
+small json text: the H5 browser and the converter below decode it). The observations are in the group
+`Datalogger000/Notes`, with two arrays enlarged by each observation: `time` (epoch seconds, **the same time as the data**) and
+`text` (utf-8).
+
+**csv files**: `tools/thermospectro_export.py FILE.h5` turns the file into csv and tif files, with the observations in
+`FILE_notes.csv` (`time (s) | clock time | observation`, the zero of the time being the one of the other files) and the
+title, the sample, the operator and the protocol in `FILE_protocol.txt`.
 
 ## Safety
 

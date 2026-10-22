@@ -302,8 +302,9 @@ class Experiment:
 
 
 def titles(group):
-    return {_text(grp.attrs['TITLE']): grp
-            for grp in group.values() if isinstance(grp, h5py.Group) and 'TITLE' in grp.attrs}
+    """The groups of the data of an experiment, by title (not the one of the observations)"""
+    return {_text(grp.attrs['TITLE']): grp for name, grp in group.items()
+            if isinstance(grp, h5py.Group) and 'TITLE' in grp.attrs and name != saving.NOTES}
 
 
 def _text(value):

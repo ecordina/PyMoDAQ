@@ -103,8 +103,8 @@ class H5Experiment:
     def __init__(self, tmp_path, index=0, file=None):
         self.file = h5py.File(file or h5_path(tmp_path), 'r')
         self.group = self.file['RawData'][f'Datalogger{index:03d}']
-        self.modules = {_text(group.attrs['TITLE']): group for group in self.group.values()
-                        if isinstance(group, h5py.Group) and 'TITLE' in group.attrs}
+        self.modules = {_text(group.attrs['TITLE']): group for name, group in self.group.items()
+                        if isinstance(group, h5py.Group) and 'TITLE' in group.attrs and name != 'Notes'}
 
     def __enter__(self):
         return self
@@ -731,11 +731,12 @@ class TestRoiManager:
                 assert (row.record.isChecked(), row.plot.isChecked()) == (roi.record, roi.plot)
 
     def test_the_numbers_and_the_colors_are_those_of_the_windows_on_the_spectrum(self, ext):
-        from pymodaq_plugins_thermospectro.widgets import roi_color
-        row = self.manager(ext).row('roi02')
+        from pymodaq_plugins_thermospectro.widgets import wavelength_color
+        row, roi = self.manager(ext).row('roi02'), ext.unit(1).settings.roi('roi02')
 
         assert row.badge.text() == '3' == ext.view(1).spectrum_plot._labels['roi02'].textItem.toPlainText()
-        assert roi_color(2) in row.badge.styleSheet()
+        color = ext.view(1).spectrum_plot.region_color('roi02')  # (the color of the wavelength in the middle of the window)
+        assert color == wavelength_color((roi.start + roi.stop) / 2.) and color in row.badge.styleSheet()
 
     def test_typing_the_edges_moves_the_window(self, ext):
         row = self.manager(ext).row('roi01')
@@ -2281,6 +2282,7 @@ class TestClosing:
         sent = spy_setpoints(ext)
         run(qtbot, ext, **SLOW)
         wait_for(qtbot, lambda: all(unit.ramp_state.setpoint > 0.5 for unit in ext.units[:2]))
+        wait_for(qtbot, lambda: all(unit.n_measurements > 4 for unit in ext.units[:2]))  # (a loaded computer reads slowly)
         ext.answers['quit'] = 'jump'
 
         assert ext._quit_fun()
@@ -2365,11 +2367,15 @@ class TestWhatTheDesignMustSurvive:
         assert not ext._settings_tree.get_action('load_settings').isEnabled()
         assert not ext._settings_tree.get_action('update_settings').isEnabled()
         assert not ext.h5_manager.get_action(FileAction.NEW_FILE).isEnabled()
-        assert not ext.docks['saving'].isEnabled()
+        panel = ext.saving_panel  # (the window stays usable, to write observations: the file and the experiment are locked)
+        assert ext.docks['saving'].isEnabled()
+        assert not any(widget.isEnabled() for widget in (panel.folder, panel.browse, panel.name, panel.add_date,
+                                                         panel.date_folders, panel.title, panel.sample, panel.operator))
         end_run(qtbot, ext)
         assert ext._settings_tree.get_action('load_settings').isEnabled()
         assert ext.h5_manager.get_action(FileAction.NEW_FILE).isEnabled()
-        assert ext.docks['saving'].isEnabled()
+        assert all(widget.isEnabled() for widget in (panel.folder, panel.browse, panel.name, panel.add_date,
+                                                     panel.date_folders, panel.title, panel.sample, panel.operator))
 
     def test_the_locks_survive_a_replaced_settings_tree(self, ext, qtbot, tmp_path):
         from pymodaq_gui.parameter import ioxml

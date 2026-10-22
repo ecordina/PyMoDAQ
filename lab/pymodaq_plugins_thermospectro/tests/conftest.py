@@ -69,8 +69,9 @@ def dashboard(qtbot, tmp_path, request):
 def ext(dashboard, qtbot, tmp_path, monkeypatch):
     """The extension on that Dashboard. Dialogs are replaced: what the user would be told is in ext.notifications
 
-    The ROIs are remembered in the folder of the test. The experiments are quick: a readout every 0.1 s, a ramp from 0
-    to 3 (the Mock thermostat starts at 0) in 2 s, one cycle.
+    The ROIs and the settings of the Saving window are remembered in the folder of the test, and the files are made in its
+    ``data`` folder. The experiments are quick: a readout every 0.1 s, a ramp from 0 to 3 (the Mock thermostat starts at
+    0) in 2 s, one cycle.
     """
     from pymodaq.utils.gui_utils.loader_utils import create_extension
     from pymodaq_plugins_thermospectro.extensions import thermo_spectro
@@ -87,8 +88,7 @@ def ext(dashboard, qtbot, tmp_path, monkeypatch):
                         lambda title, text, error=False: extension.notifications.append((title, text, error)))
     monkeypatch.setattr(extension, '_ask_abort_return', lambda: extension.answers['abort_return'])
     monkeypatch.setattr(extension, '_ask_quit_choice', lambda: extension.answers['quit'])
-    # (not ext.h5saver: this property creates a new file straight away, in the default folder)
-    extension.h5_manager.get_h5saver(create_new_file=False).settings['base_path'] = str(tmp_path / 'data')
+    extension.saving_panel.set_values({'folder': str(tmp_path / 'data')})
     for unit in extension.units:
         settings = unit.settings
         settings.child('integration_time').setValue(20.)  # (the defaults, 500 ms and 1 s, make slow tests)
@@ -116,6 +116,13 @@ def ext(dashboard, qtbot, tmp_path, monkeypatch):
     extension.quit_fun()
     release(window)
     qtbot.wait(150)  # (the saver thread deletes its objects: let it finish before the next test builds a big tree)
+
+
+@pytest.fixture(autouse=True)
+def saving_settings_in_tmp(tmp_path, monkeypatch):
+    """What is typed in the Saving window is remembered in the folder of the test, never in the one of the user"""
+    from pymodaq_plugins_thermospectro.extensions import thermo_spectro
+    monkeypatch.setattr(thermo_spectro, 'default_saving_path', lambda: tmp_path / 'remembered' / 'saving.json')
 
 
 @pytest.fixture(autouse=True)

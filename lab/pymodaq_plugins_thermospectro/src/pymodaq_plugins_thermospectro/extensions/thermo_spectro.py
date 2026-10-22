@@ -37,6 +37,7 @@ from __future__ import annotations
 import re
 import sys
 import time
+from pathlib import Path
 from typing import Optional, Sequence
 
 from qtpy import QtCore, QtWidgets
@@ -63,7 +64,9 @@ from pymodaq_plugins_thermospectro.camera_widgets import HINT as CAMERA_HINT
 from pymodaq_plugins_thermospectro.ramp import END_AT_FINAL, END_AT_INITIAL, format_duration
 from pymodaq_plugins_thermospectro.roi_manager import HINT
 from pymodaq_plugins_thermospectro.rois import RoiStore, default_store_path
-from pymodaq_plugins_thermospectro.saving import ThermoSpectroSaver, UnitRecording, build_dtes
+from pymodaq_plugins_thermospectro.saving import (NoteBundle, ThermoSpectroSaver, UnitRecording, build_dtes,
+                                                  folder_problem)
+from pymodaq_plugins_thermospectro.saving_panel import NOTE_LIMIT, SavingPanel, SavingStore, default_saving_path
 from pymodaq_plugins_thermospectro.unit import CameraUnit, Measurement, Problem, Unit, UnitState, logged
 from pymodaq_plugins_thermospectro.unit_settings import (CAMERA, CONTROL_RAMP, NONE, CameraSettings, UnitSettings,
                                                          unit_definition)
@@ -113,6 +116,10 @@ class ThermoSpectro(CustomExt):
         self.units: list[Unit] = []
         self.views: list[UnitView] = []
         self._store = RoiStore(default_store_path())
+        self._saving_store = SavingStore(default_saving_path())
+        self.saving_panel: Optional[SavingPanel] = None  # (made with the windows)
+        self.note_edit: Optional[QtWidgets.QLineEdit] = None  # (in the toolbar)
+        self._current_file: Optional[Path] = None  # the file of the experiment which runs, or of the last one
         self.params = self._build_params()
         self._modules_offered = False
         self._offering = False  # the modules are being offered: the windows of the units are arranged all at once
@@ -174,6 +181,10 @@ class ThermoSpectro(CustomExt):
         self._roi_timer.setSingleShot(True)
         self._roi_timer.setInterval(500)
         self._roi_timer.timeout.connect(self.save_rois)
+        self._saving_timer = QtCore.QTimer(self)  # so is what was typed in the Saving window
+        self._saving_timer.setSingleShot(True)
+        self._saving_timer.setInterval(500)
+        self._saving_timer.timeout.connect(self.remember_saving)
         self._init_timer = QtCore.QTimer(self)  # the modules are initialized one after the other
         self._init_timer.setInterval(200)
         self._init_timer.timeout.connect(self._init_poll)
@@ -428,7 +439,8 @@ class ThermoSpectro(CustomExt):
         self.docks['settings'] = Dock('Settings', closable=True, autoOrientation=False)
         self.docks['settings'].addWidget(self.settings_tree)
         self.docks['saving'] = Dock('Saving', closable=True, autoOrientation=False)
-        self.docks['saving'].addWidget(self.h5_manager.get_h5saver(create_new_file=False).settings_tree)
+        self._setup_saving_panel()
+        self.docks['saving'].addWidget(self.saving_panel)
         manager = QtWidgets.QWidget()  # the ROI manager: the ROIs of every spectrometer in one window
         layout = QtWidgets.QVBoxLayout(manager)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -573,6 +585,17 @@ class ThermoSpectro(CustomExt):
                             'End the ramps now at their initial value (the bottom: where they started): the '
                             'temperature goes back there and stays, and the log goes on until you press Stop. Only '
                             'while a ramp is going on', toolbar=self.toolbar, menu='actions', enabled=False)
+        self.toolbar.addSeparator()
+        self.note_edit = QtWidgets.QLineEdit()  # (the Saving window has the same, with the list of the observations)
+        self.note_edit.setPlaceholderText('Note an observation (Enter)')
+        self.note_edit.setToolTip('Write what you notice while the log runs and press Enter: it is saved in the file '
+                                  'with its time. Only while a log runs and a file is written')
+        self.note_edit.setMaxLength(NOTE_LIMIT)
+        self.note_edit.setMinimumWidth(200)
+        self.note_edit.setMaximumWidth(380)
+        self.note_edit.setEnabled(False)
+        self.note_edit.returnPressed.connect(self._note_from_toolbar)
+        self.toolbar.addWidget(self.note_edit)
         for key in self.docks:
             self.add_action(f'show_{key}', self.DOCK_TITLES.get(key, key), '',
                             'Show or close this window. A closed plot can be opened again here', checkable=True,
@@ -585,6 +608,8 @@ class ThermoSpectro(CustomExt):
         self.connect_action(WorkFlowActions.START, self.start_run)
         self.connect_action(WorkFlowActions.STOP, self.stop_run)
         self.connect_action(WorkFlowActions.PAUSE, self.pause_run)
+        self.connect_action(WorkFlowActions.LOG, lambda checked=True: self.saving_panel.set_logging(bool(checked)))
+        self.saving_panel.set_logging(self.is_action_checked(WorkFlowActions.LOG))
         if self.THERMOSTATS:
             self.connect_action('end_top', lambda *_: self.finish_ramps(END_AT_FINAL))
             self.connect_action('end_bottom', lambda *_: self.finish_ramps(END_AT_INITIAL))
@@ -1028,6 +1053,95 @@ class ThermoSpectro(CustomExt):
             unit.settings.child('rois', name, 'plot').setValue(plotted)
 
     # ----------------------------------------------------------------------------------------------------------
+    # the file: where it is, its name, what is said about the experiment, the observations made while it runs
+    # ----------------------------------------------------------------------------------------------------------
+    def _setup_saving_panel(self):
+        """The Saving window (its content is the user's: it is remembered from one session to the next)"""
+        panel = self.saving_panel = SavingPanel()
+        panel.set_advanced(self.h5_manager.get_h5saver(create_new_file=False).settings_tree)
+        panel.set_values(self._saving_store.load())
+        panel.changed.connect(self._on_saving_changed)
+        panel.note_entered.connect(self.add_note)
+        self._sync_h5saver()
+
+    def _sync_h5saver(self):
+        """The h5saver of the Dashboard shows (and uses, for the files of its File menu) the folder and the name of the
+        window: the file of an experiment is made from them (see :meth:`_prepare_file`)"""
+        try:
+            settings = self.h5_manager.get_h5saver(create_new_file=False).settings
+            settings['base_path'] = str(self.saving_panel.folder_path)
+            settings['base_name'] = saving.clean_name(self.saving_panel.values()['name'])
+        except Exception:
+            logger.exception('The folder and the name of the files could not be given to the h5saver')
+
+    def _on_saving_changed(self):
+        self._sync_h5saver()
+        self._saving_timer.start()
+
+    def remember_saving(self):
+        """Remember what was typed in the Saving window for the next session (see :class:`~.saving_panel.SavingStore`)"""
+        self._saving_timer.stop()
+        if self.saving_panel is not None and not self._saving_store.save(self.saving_panel.values()):
+            logger.warning(f'What was typed in the Saving window could not be remembered ({self._saving_store.path})')
+
+    @property
+    def current_file(self) -> Optional[Path]:
+        """The file of the experiment which runs, or of the last one (None before the first one)"""
+        return self._current_file
+
+    def _experiment_metadata(self) -> dict:
+        """What is saved about the experiment in the attributes of the file: what the user wrote, and the application"""
+        configuration = configurations.configuration_of_class(type(self).__name__)
+        return self.saving_panel.metadata(application=configuration.command if configuration else type(self).__name__)
+
+    def _saving_problem(self) -> Optional[str]:
+        """Why the file of an experiment could not be made (None: it can, the folder is made if it does not exist)"""
+        problem = folder_problem(self.saving_panel.folder_path)
+        return f'The data cannot be saved: {problem}. Choose another folder in the Saving window' if problem else None
+
+    def _can_note(self) -> bool:
+        """An observation can be saved now: the log runs, a file is written and it has its group of observations"""
+        return bool(self._run_active and self._saving and self._worker.is_running
+                    and self._module_and_data_saver.notes_ready)
+
+    def _update_note_fields(self):
+        """The observations are written during the log (the one of the window and the one of the toolbar)"""
+        if self.saving_panel is None:
+            return
+        can = self._can_note()
+        self.saving_panel.set_running(self._run_active, saving=can)
+        if self.note_edit is not None:
+            self.note_edit.setEnabled(can)
+
+    def _note_from_toolbar(self):
+        text = self.note_edit.text()
+        if text.strip() and self.add_note(text):
+            self.note_edit.clear()
+
+    def add_note(self, text: str) -> bool:
+        """Save an observation in the file of the experiment which runs, with the time it was made
+
+        It is shown in the list of the Saving window as soon as it is queued for the thread which writes the file (which
+        writes it after the data it follows).
+
+        Returns
+        -------
+        bool
+            False if it was not saved: the text is empty, or no log runs and writes a file
+        """
+        text = str(text).strip()[:NOTE_LIMIT]
+        if not text:
+            return False
+        if not self._can_note():
+            self.status_signal.emit('The observation was not saved: observations are saved while a log runs and a file is '
+                                    'written')
+            return False
+        epoch = time.time()
+        self._worker.save_note(epoch, text)
+        self.saving_panel.show_note(epoch, epoch - self._origin, text)
+        return True
+
+    # ----------------------------------------------------------------------------------------------------------
     # locking
     # ----------------------------------------------------------------------------------------------------------
     def _lock_modules(self, locked: bool):
@@ -1055,7 +1169,7 @@ class ThermoSpectro(CustomExt):
                        FileAction.CLOSE_FILE):
             if self.h5_manager.has_action(action):
                 self.h5_manager.set_action_enabled(action, not locked)
-        self.docks['saving'].setEnabled(not locked)
+        self.saving_panel.set_locked(locked)  # (the observations can be written: the window stays usable)
         self._lock_modules(locked or self._monitoring)  # (the modules in use are not swapped during a live view either)
 
     # ----------------------------------------------------------------------------------------------------------
@@ -1149,6 +1263,12 @@ class ThermoSpectro(CustomExt):
         problems = self._check_cross_problems(units) + [p for unit in units for p in unit.problems()]
         if not problems:  # (the temperatures: they are not a problem for the live view)
             problems = [p for unit in units for p in unit.run_problems()]
+        if not problems and self.is_action_checked(WorkFlowActions.LOG):  # (the file is not made yet: say it now)
+            problem = self._saving_problem()
+            if problem:
+                problems.append(problem)
+                self.set_dock_visible('saving', True)
+                self.docks['saving'].raiseDock()
         if problems:
             self._report_problems(problems)
             return
@@ -1197,12 +1317,19 @@ class ThermoSpectro(CustomExt):
             self.set_permanent_status('Live' if self._monitoring else '')
 
     def _prepare_file(self) -> bool:
-        """A new file for the experiment (SWMR if the h5py backend is there), the previous one is closed"""
+        """A new file for the experiment (SWMR if the h5py backend is there), the previous one is closed
+
+        It is in the folder of the Saving window, named as it says (see :func:`~.saving.new_file_path`), and has what
+        the user wrote about the experiment in its attributes.
+        """
         manager = self.h5_manager
         # (the h5saver property would reopen the file of the last experiment, which may be open elsewhere)
         h5saver = manager._init_h5_saver() if hasattr(manager, '_init_h5_saver') else manager.get_h5saver()
         manager.close_file()
-        swmr = saving.prepare_file(h5saver)
+        path = self.saving_panel.next_file()
+        swmr = saving.prepare_file(h5saver, path=path, metadata=self._experiment_metadata())
+        self._current_file = path
+        self.saving_panel.set_current_file(path)
         manager.update_file_status_led()
         return swmr
 
@@ -1214,10 +1341,13 @@ class ThermoSpectro(CustomExt):
             self._recordings = {recording.number: recording for recording in recordings}
             self._saving = self.is_action_checked(WorkFlowActions.LOG) and any(r.is_saved for r in recordings)
             self._swmr = False
+            self.saving_panel.clear_notes()  # (the observations of the previous experiment are in its file)
             if self._saving:
                 self._swmr = self._prepare_file()
                 self._module_and_data_saver.configure(recordings)
                 self._worker.start()  # (it may show a dialog, the timers run meanwhile: the run is not active yet)
+                if not self._module_and_data_saver.notes_ready:
+                    self.status_signal.emit('The observations cannot be saved in this file (the h5py backend is needed)')
             elif self.is_action_checked(WorkFlowActions.LOG):
                 self.status_signal.emit('Nothing is recorded: no spectrum, ROI or temperature is ticked')
             self._origin = origin
@@ -1227,6 +1357,7 @@ class ThermoSpectro(CustomExt):
                 unit.begin_run(origin, now)
             self._run_active = True
             self._lock_ui(True)
+            self._update_note_fields()
             self.set_action_checked(WorkFlowActions.PAUSE, False)
             self._update_run_actions()
             self._ramp_timer.start(int(round(self._update_period() * 1000)))
@@ -1243,6 +1374,7 @@ class ThermoSpectro(CustomExt):
             except Exception:
                 logger.exception('The saver could not be stopped')
             self._lock_ui(False)
+            self._update_note_fields()
             self._end_start_attempt()
             self._notify('Cannot start', f'The experiment could not start: {e}', error=True)
 
@@ -1462,6 +1594,7 @@ class ThermoSpectro(CustomExt):
             for unit in units:
                 unit.end_run()
             self._lock_ui(False)
+            self._update_note_fields()  # (no log any more: nothing to note)
             self.set_action_enabled(WorkFlowActions.START, True)
             self.set_action_enabled(WorkFlowActions.STOP, False)
             self._update_run_actions()  # (no run any more: the buttons of the ramps are off)
@@ -1525,6 +1658,7 @@ class ThermoSpectro(CustomExt):
         self._init_timer.stop()  # (the modules which were being connected are left alone)
         self._stop_waiting_for_init()
         self.save_rois()
+        self.remember_saving()
         self.h5_manager.close_file()
         return True
 
@@ -1544,6 +1678,11 @@ class ThermoSpectroWorker(ExtensionWorker):
         """Queue some data to be written by the saver thread"""
         self.thread_manager.n_jobs[SaverWorker.name] += 1
         self.saver_worker.data_to_save_signal.emit(DataBundle(dte=dte))
+
+    def save_note(self, epoch: float, text: str):
+        """Queue an observation to be written by the saver thread, after the data which were queued before it"""
+        self.thread_manager.n_jobs[SaverWorker.name] += 1
+        self.saver_worker.data_to_save_signal.emit(NoteBundle(dte=DataToExport('Note'), epoch=epoch, text=text))
 
     def drain(self, stall: float = 10.0) -> bool:
         """Wait until the saver thread has written everything it was given

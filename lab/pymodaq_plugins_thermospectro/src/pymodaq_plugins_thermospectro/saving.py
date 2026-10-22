@@ -17,14 +17,23 @@ Each one is saved, or not, independently of the others:
 All the arrays of a unit are enlarged along a time axis made of the time (epoch seconds) at which each readout
 started: the same for the four groups of a unit.
 
+What the user wrote about the experiment (``experiment_title``, ``sample``, ``operator``, ``protocol``, and the
+``application`` which made the file) is in the attributes of the group ``RawData``. The observations noted while it runs
+are in the group ``Notes`` of the experiment, with two arrays enlarged by each observation: ``time`` (epoch seconds, the
+one of the data) and ``text``.
+
 The file is written in SWMR mode (single writer, multiple readers): it can be opened by another program, for instance to
 follow the experiment, while it is being written, see :func:`prepare_file`.
 """
 from __future__ import annotations
 
+import datetime
 import json
 import math
+import os
+import re
 from dataclasses import dataclass, field, replace
+from pathlib import Path
 from typing import Iterable, Optional
 
 import numpy as np
@@ -45,6 +54,9 @@ from pymodaq_plugins_thermospectro.rois import unique_names
 
 logger = set_logger(get_module_name(__file__))
 
+NOTES = 'Notes'  # the group of the observations
+NOTE_BYTES = 4000  # the room of an observation in the file, in bytes of UTF-8: 1000 characters of any language (an
+# array of strings of a fixed size can be enlarged once the file is in SWMR mode, one of strings of any size cannot)
 SPECTRUM = 'Spectrum'
 IMAGE = 'Image'  # what the full spectrum is for a camera
 ROIS = 'ROIs'
@@ -55,6 +67,81 @@ PROGRAM = 'Program'
 def group_title(number: int, what: str) -> str:
     """The title of a group of the file: ``Unit1_ROIs``"""
     return f'Unit{number}_{what}'
+
+
+#: What a name of file cannot hold on one system or another
+INVALID_IN_NAMES = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
+
+
+def clean_name(name: str, default: str = 'Dataset') -> str:
+    """A name which can be the one of a file everywhere: its forbidden characters become ``_``, it has no ``.h5``"""
+    cleaned = INVALID_IN_NAMES.sub('_', str(name)).strip()
+    if cleaned.lower().endswith('.h5'):
+        cleaned = cleaned[:-3]
+    return cleaned.strip().strip('.').strip() or default
+
+
+def new_file_path(folder, name: str, add_date: bool = True, date_folders: bool = False,
+                  now: Optional[datetime.datetime] = None) -> Path:
+    """The path of the file of a new experiment, which does not exist yet (an existing file is never replaced)
+
+    Parameters
+    ----------
+    folder: str or Path
+        Where the files are
+    name: str
+        The name of the file, without ``.h5``: ``Sample12`` (see :func:`clean_name`)
+    add_date: bool
+        Add the date and the time to it: ``Sample12_20261022_153012.h5`` (else ``Sample12.h5``)
+    date_folders: bool
+        Put the file in the folders of the year and of the day, as PyMoDAQ does: ``2026/20261022``
+    now: datetime, optional
+        The time of the experiment (now)
+
+    Returns
+    -------
+    Path
+        If the file exists (a name without date used twice) a number is added: ``Sample12_001.h5``
+    """
+    now = now or datetime.datetime.now()
+    folder = Path(folder).expanduser()
+    if date_folders:
+        folder = folder / f'{now:%Y}' / f'{now:%Y%m%d}'
+    stem = clean_name(name)
+    if add_date:
+        stem = f'{stem}_{now:%Y%m%d_%H%M%S}'
+    path, number = folder / f'{stem}.h5', 0
+    while path.exists():
+        number += 1
+        path = folder / f'{stem}_{number:03d}.h5'
+    return path
+
+
+def folder_problem(folder) -> Optional[str]:
+    """Why files cannot be made in a folder, in words (None: they can; the folder is made if it does not exist)"""
+    path = Path(folder).expanduser().absolute()
+    probe = path
+    while not probe.exists():
+        if probe.parent == probe:
+            return f'{path} cannot be made ({probe} does not exist)'
+        probe = probe.parent
+    if not probe.is_dir():
+        return f'{probe} is not a folder'
+    if not os.access(probe, os.W_OK | os.X_OK):
+        return f'nothing can be written in {probe}'
+    return None
+
+
+def cut_to_bytes(text: str, size: int = NOTE_BYTES) -> str:
+    """The text, cut so that its UTF-8 holds in `size` bytes (a character is never cut in two)"""
+    return text.encode('utf-8')[:size].decode('utf-8', 'ignore')
+
+
+@dataclass
+class NoteBundle(DataBundle):
+    """An observation on its way to the thread which writes the file (the data go there in a DataBundle)"""
+    epoch: float = 0.
+    text: str = ''
 
 
 class VirtualModule:
@@ -246,6 +333,7 @@ class ThermoSpectroSaver(ExtensionSaver):
         self._detector_modules: list = []
         self._actuator_modules: list = []
         self._seen: set[str] = set()
+        self._notes = None  # the two arrays of the observations (time, text) of the file being written
         self.swmr_started = False
         self.n_errors = 0  # the data that could not be saved
 
@@ -267,8 +355,14 @@ class ThermoSpectroSaver(ExtensionSaver):
                 if recording.program:
                     self._detector_modules.append(VirtualModule(group_title(number, PROGRAM), recording.settings))
         self._seen = set()
+        self._notes = None
         self.swmr_started = False
         self.n_errors = 0
+
+    @property
+    def notes_ready(self) -> bool:
+        """The file being written has its arrays of observations (they are made with its group)"""
+        return self._notes is not None
 
     @property
     def expected(self) -> set[str]:
@@ -291,7 +385,38 @@ class ThermoSpectroSaver(ExtensionSaver):
         if new:
             for recording in self._recordings:
                 self._annotate(recording)
+            self._make_notes(node)
         return node
+
+    def _make_notes(self, node):
+        """The group of the observations, with its two arrays: they are made now, nothing can be created once SWMR is on"""
+        self._notes = None
+        try:
+            import h5py
+            group = self._h5saver.get_set_group(node, NOTES, title='Observations')
+            self._h5saver.set_attr(group, 'description', 'what the user noted during the experiment: the time (epoch '
+                                                         'seconds) and the text of each observation')
+            h5_group = group.node
+            self._notes = (
+                h5_group.create_dataset('time', shape=(0,), maxshape=(None,), dtype='float64', chunks=(64,)),
+                h5_group.create_dataset('text', shape=(0,), maxshape=(None,), chunks=(16,),
+                                        dtype=h5py.string_dtype('utf-8', NOTE_BYTES)))
+        except Exception:  # (an other backend than h5py: the observations are only in the window)
+            logger.warning('The observations cannot be saved in this file (it needs the h5py backend)', exc_info=True)
+
+    def add_note(self, epoch: float, text: str) -> bool:
+        """Append an observation to the file (in the thread which writes it)"""
+        if self._notes is None:
+            return False
+        times, texts = self._notes
+        size = times.shape[0]
+        times.resize((size + 1,))
+        texts.resize((size + 1,))
+        times[size] = float(epoch)
+        texts[size] = cut_to_bytes(text).encode('utf-8')
+        times.flush()
+        texts.flush()
+        return True
 
     def _annotate(self, recording: UnitRecording):
         """What the reader of the file needs to know about the groups of a unit"""
@@ -328,6 +453,14 @@ class ThermoSpectroSaver(ExtensionSaver):
     def add_data_bundle(self, data: DataBundle):
         # runs in the thread of the SaverWorker, which counts the data it did, so it must not raise: the end of
         # the experiment waits for all of them
+        if isinstance(data, NoteBundle):
+            try:
+                if not self.add_note(data.epoch, data.text):
+                    raise RuntimeError('this file has no array of observations')
+            except Exception:
+                self.n_errors += 1
+                logger.exception('An observation could not be saved')
+            return
         try:
             self.add_data(data.dte)
             self._start_swmr_when_complete()
@@ -348,7 +481,7 @@ class ThermoSpectroSaver(ExtensionSaver):
             logger.info('The file can be read while it is written (SWMR)')
 
 
-def prepare_file(h5saver, flush_interval: Optional[int] = None) -> bool:
+def prepare_file(h5saver, flush_interval: Optional[int] = None, path=None, metadata: Optional[dict] = None) -> bool:
     """Make a new file for an experiment, in SWMR mode if the h5 backend allows it
 
     The h5py backend is the only one which can do SWMR: the h5saver is switched to it. A new file is made each time:
@@ -360,6 +493,12 @@ def prepare_file(h5saver, flush_interval: Optional[int] = None) -> bool:
         The one of the extension
     flush_interval: int
         Flush the file every that many writes (default: the setting of the h5saver, 1)
+    path: str or Path, optional
+        The file to make (see :func:`new_file_path`), its folders are made if needed. Default: the one the h5saver
+        chooses from its base path and base name
+    metadata: dict, optional
+        Attributes of the group ``RawData`` of the file: what the user wrote about the experiment (not ``title``: it
+        would replace the title of the group)
 
     Returns
     -------
@@ -378,7 +517,12 @@ def prepare_file(h5saver, flush_interval: Optional[int] = None) -> bool:
         logger.warning('The h5py backend is not available: the file cannot be read while it is written')
     if flush_interval is not None:
         settings['backend', 'swmr_options', 'flush_interval'] = int(flush_interval)
-    h5saver.init_file(update_h5=True)
+    if path is not None:
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        h5saver.init_file(update_h5=True, addhoc_file_path=path, metadata=dict(metadata or {}))
+    else:
+        h5saver.init_file(update_h5=True, metadata=dict(metadata or {}))
     swmr = swmr and h5saver.swmr_mode
     if swmr:
         h5saver.set_swmr_flush_interval(int(settings['backend', 'swmr_options', 'flush_interval']))

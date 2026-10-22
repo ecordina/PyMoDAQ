@@ -14,8 +14,13 @@ The file written by PyMoDAQ is made of one small array per kind of data. This sc
   than 4 GB (BigTIFF): a longer series of images is split in ``<file>_camera_part01.tif``, ``..._part02.tif``..., and the
   csv files have the columns ``tif file`` and ``tif frame`` (from 1, in that file).
 
+* what the user wrote about the experiment (the title, the sample, the operator, the protocol), as ``<file>_protocol.txt``,
+  and the observations noted while it ran, one row each, as ``<file>_notes.csv`` with the columns
+  ``time (s) | clock time | observation`` (the same zero of the time as the other files; the clock time is the one of
+  the computer which converts the file).
+
 What is not in the file (a spectrometer or a camera which was not used, the temperature or the full spectrum or the
-full image which were not recorded) is left out. The full image is recorded only if *The full image* was ticked under
+full image which were not recorded, no observation, nothing written about the experiment) is left out. The full image is recorded only if *The full image* was ticked under
 *Record to disk* of the camera.
 
 The time is in seconds from the first measurement of the experiment, the same zero in all the files (``--absolute-time``
@@ -41,6 +46,7 @@ from __future__ import annotations
 import argparse
 import ast
 import csv
+import datetime
 import json
 import re
 import sys
@@ -51,6 +57,9 @@ from typing import Iterator, Optional, Sequence
 import numpy as np
 
 KINDS = ('Spectrum', 'Image', 'ROIs', 'Temperature', 'Program')
+#: What the user wrote about the experiment: the attributes of the group RawData (and the application which made the file)
+DESCRIPTION = ('experiment_title', 'sample', 'operator', 'protocol', 'application')
+NOTES = 'Notes'  # the group of the observations, in the group of the experiment
 TITLE = re.compile(r'^Unit(\d+)_(Spectrum|Image|ROIs|Temperature|Program)$')
 IMAGEJ_TYPES = (np.uint8, np.uint16, np.float32)
 CHANNEL_COLORS = ('red', 'green', 'blue')
@@ -163,8 +172,8 @@ def read_series(title: str, kind: str, group) -> Series:
     return Series(kind, title, time, arrays, labels, axis, attrs)
 
 
-def read_experiment(file, index: int = -1) -> dict[int, UnitData]:
-    """The units of an experiment (`index` -1: the last one of the file)"""
+def experiment_group(file, index: int = -1):
+    """The group of an experiment of the file (`index` -1: the last one) and its name"""
     root = file['RawData']
     names = sorted((name for name in root if name.startswith('Datalogger')), key=natural)
     if not names:
@@ -172,8 +181,33 @@ def read_experiment(file, index: int = -1) -> dict[int, UnitData]:
     name = names[index] if index < 0 else f'Datalogger{index:03d}'
     if name not in root:
         raise ValueError(f'There is no experiment {index} in this file: it has {", ".join(names)}')
+    return root[name], name
+
+
+def read_description(file) -> dict[str, str]:
+    """What the user wrote about the experiment (a file made before it could be written has nothing)"""
+    attrs = file['RawData'].attrs
+    return {key: str(attribute(attrs[key])) for key in DESCRIPTION if key in attrs}
+
+
+def read_notes(group) -> tuple[np.ndarray, list[str]]:
+    """The observations noted during an experiment: their time (epoch seconds) and their text (none in a file made before
+    they could be noted)"""
+    if NOTES not in group or 'time' not in group[NOTES] or 'text' not in group[NOTES]:
+        return np.zeros(0), []
+    notes = group[NOTES]
+    times = np.asarray(notes['time'][:], dtype=float)
+    texts = [text.decode('utf-8', errors='replace') if isinstance(text, bytes) else str(text)
+             for text in notes['text'][:]]
+    rows = min(len(times), len(texts))  # (the file of an experiment which is running: a row may be half written)
+    return times[:rows], texts[:rows]
+
+
+def read_experiment(file, index: int = -1) -> dict[int, UnitData]:
+    """The units of an experiment (`index` -1: the last one of the file)"""
+    experiment, name = experiment_group(file, index)
     units: dict[int, UnitData] = {}
-    for group in root[name].values():
+    for group in experiment.values():
         if 'TITLE' not in group.attrs:
             continue
         title = str(attribute(group.attrs['TITLE']))
@@ -283,6 +317,55 @@ def write_csv(path: Path, header: Sequence[str], columns: Sequence, delimiter: s
         writer.writerow(header)
         for row in range(rows):
             writer.writerow([cell(column[row]) for column in columns])
+
+
+def clock_time(epoch: float) -> str:
+    """The time of the day of an instant (epoch seconds), in the time zone of this computer"""
+    return datetime.datetime.fromtimestamp(epoch).strftime('%Y-%m-%d %H:%M:%S')
+
+
+def export_notes(times: np.ndarray, texts: Sequence[str], t0: float, stem: Path, options) -> list[Path]:
+    """``<file>_notes.csv``: the observations, one row each: time | clock time | observation (nothing if there are none)"""
+    if not len(times):
+        return []
+    time_name, shown = time_column(times, t0, options)
+    path = stem.with_name(f'{stem.name}_notes.csv')
+    write_csv(path, [time_name, 'clock time', 'observation'], [shown, [clock_time(t) for t in times], list(texts)],
+              options.delimiter)
+    return [path]
+
+
+def started_at(file) -> str:
+    """When the file was made, as ``2026-10-22 15:30:12`` ('' if the file does not say)"""
+    try:
+        return f"{attribute(file.attrs['date'])} {str(attribute(file.attrs['time']))[:8]}"
+    except KeyError:
+        return ''
+
+
+def protocol_text(description: dict[str, str], file_name: str, started: str) -> str:
+    """What the user wrote about the experiment, as a text ('' if nothing was written)"""
+    said = {key: description.get(key, '').strip() for key in DESCRIPTION}
+    if not any(said[key] for key in ('experiment_title', 'sample', 'operator', 'protocol')):
+        return ''
+    lines = [f'{label}: {said[key]}' for label, key in (('Experiment', 'experiment_title'), ('Sample', 'sample'),
+                                                         ('Operator', 'operator'), ('Application', 'application'))
+             if said[key]]
+    lines += [f'Started: {started}'] if started else []
+    lines.append(f'File: {file_name}')
+    if said['protocol']:
+        lines += ['', 'Protocol', '--------', said['protocol']]
+    return '\n'.join(lines) + '\n'
+
+
+def export_protocol(description: dict[str, str], file, stem: Path) -> list[Path]:
+    """``<file>_protocol.txt``: what the user wrote about the experiment (nothing if nothing was written)"""
+    text = protocol_text(description, Path(file.filename).name, started_at(file))
+    if not text:
+        return []
+    path = stem.with_name(f'{stem.name}_protocol.txt')
+    path.write_text(text, encoding='utf-8-sig')
+    return [path]
 
 
 # ----------------------------------------------------------------------------------------------------------------------
@@ -584,8 +667,16 @@ def export_camera(camera: UnitData, units: dict[int, UnitData], t0: float, stem:
 # ----------------------------------------------------------------------------------------------------------------------
 # the command
 # ----------------------------------------------------------------------------------------------------------------------
-def describe(units: dict[int, UnitData]) -> str:
+def describe(units: dict[int, UnitData], description: Optional[dict[str, str]] = None, n_notes: int = 0) -> str:
     lines = []
+    said = [f'{label} {description[key]}' for label, key in (('experiment', 'experiment_title'), ('sample', 'sample'),
+                                                             ('operator', 'operator')) if (description or {}).get(key)]
+    if said:
+        lines.append('  ' + ', '.join(said))
+    if (description or {}).get('protocol'):
+        lines.append(f'  a protocol of {len(description["protocol"])} characters')
+    if n_notes:
+        lines.append(f'  {n_notes} observation{"" if n_notes == 1 else "s"}')
     for number in sorted(units):
         unit = units[number]
         what = ', '.join(f'{kind} ({len(series)} rows)' for kind, series in unit.series.items())
@@ -603,7 +694,9 @@ def export_file(path: Path, out: Optional[Path], options) -> list[Path]:
     written = []
     with open_file(path) as file:
         units = read_experiment(file, options.experiment)
-        print(f'{path}:\n{describe(units)}')
+        description = read_description(file)
+        times, texts = read_notes(experiment_group(file, options.experiment)[0])
+        print(f'{path}:\n{describe(units, description, len(texts))}')
         if options.list:
             return []
         t0 = experiment_start(units)
@@ -616,13 +709,16 @@ def export_file(path: Path, out: Optional[Path], options) -> list[Path]:
                     written += export_spectrometer(unit, t0, stem, options)
             except ValueError as e:
                 print(f'  {unit.name}: {e}', file=sys.stderr)
+        written += export_notes(times, texts, t0, stem, options)
+        written += export_protocol(description, file, stem)
     return written
 
 
 def parser() -> argparse.ArgumentParser:
     arguments = argparse.ArgumentParser(
-        description='Convert the h5 file of a ThermoSpectro experiment into csv files (one per spectrometer) and a '
-                    'tif with its csv (the camera).', epilog=__doc__.split('\n\n')[0])
+        description='Convert the h5 file of a ThermoSpectro experiment into csv files (one per spectrometer), a '
+                    'tif with its csv (the camera), the observations (csv) and the protocol (text).',
+        epilog=__doc__.split('\n\n')[0])
     arguments.add_argument('files', nargs='+', type=Path, help='the h5 file(s) written by the extension')
     arguments.add_argument('-o', '--out', type=Path, help='the folder of the new files (default: the one of the h5 file)')
     arguments.add_argument('--experiment', type=int, default=-1, metavar='N',
