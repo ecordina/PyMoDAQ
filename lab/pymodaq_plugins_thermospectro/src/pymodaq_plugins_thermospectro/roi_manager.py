@@ -17,6 +17,7 @@ from typing import Optional, Sequence
 from qtpy import QtCore, QtWidgets
 
 from pymodaq_plugins_thermospectro.rois import Roi
+from pymodaq_plugins_thermospectro.widgets import contrast_text
 
 #: How the ROIs are set up, for the user
 HINT = ('Drag a window (or one of its edges) on the spectrum, or type its edges here. Double click on the spectrum, '
@@ -182,10 +183,7 @@ class RoiRow(QtWidgets.QWidget):
         """
         self._name = roi.name
         self.badge.setText(str(index + 1))
-        if color != self._color:
-            self._color = color
-            self.badge.setStyleSheet(f'background-color: {color}; color: white; font-weight: bold; '
-                                     f'border-radius: 3px;')
+        self.set_color(color)
         if self.name.text() != roi.name and not self.name.hasFocus():
             _quietly(self.name, self.name.setText, roi.name)
         self._start, self._stop = float(roi.start), float(roi.stop)
@@ -201,6 +199,13 @@ class RoiRow(QtWidgets.QWidget):
         for box, value in ((self.record, roi.record), (self.plot, roi.plot)):
             if box.isChecked() != bool(value):
                 _quietly(box, box.setChecked, bool(value))
+
+    def set_color(self, color: str):
+        """The color of the number of the ROI (and the one of its text, which must be read on it)"""
+        if color != self._color:
+            self._color = color
+            self.badge.setStyleSheet(f'background-color: {color}; color: {contrast_text(color)}; font-weight: bold; '
+                                     f'border-radius: 3px;')
 
     def show_edges(self, start: float, stop: float):
         """The window is being dragged on the spectrum: follow it (nothing is emitted)"""
@@ -373,6 +378,12 @@ class RoiManager(QtWidgets.QWidget):
         row = self._rows.get(key)
         if row is not None:
             row.show_edges(start, stop)
+
+    def set_color(self, key: str, color: str):
+        """A window is being dragged to another wavelength: its number takes the color of the new one"""
+        row = self._rows.get(key)
+        if row is not None:
+            row.set_color(color)
 
     def focus_roi(self, key: str):
         """Put the cursor in the name of a ROI (a ROI which was just added is named at once)"""

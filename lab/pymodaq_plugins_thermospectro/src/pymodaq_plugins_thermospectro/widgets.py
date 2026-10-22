@@ -1,6 +1,7 @@
 """Small plot widgets: the compact spectra, where the ROIs are edited, and the curves following them in time"""
 from __future__ import annotations
 
+import math
 from typing import Optional, Sequence
 
 import numpy as np
@@ -16,6 +17,92 @@ TEMPERATURE_COLOR = '#d62728'
 
 def roi_color(index: int) -> str:
     return PALETTE[index % len(PALETTE)]
+
+
+#: The wavelengths (nm) of the visible spectrum: beyond them (ultraviolet, infrared) a color is only an indication
+VISIBLE_RANGE = (380., 780.)
+NEUTRAL = 0.62  # the grey the colors of the ultraviolet and of the infrared tend to
+#: How bright the colors must be to be seen: the lightness (0 black, 1 white) below which a color is lightened on a dark
+#: background, and above which it is darkened on a light one
+DARK_BACKGROUND_FLOOR = 0.22
+LIGHT_BACKGROUND_CEILING = 0.55
+
+
+def _rainbow(nm: float) -> tuple[float, float, float]:
+    """r, g, b (0 to 1) of a wavelength between 400 and 700 nm: violet, blue, cyan, green, yellow, orange, red"""
+    if nm < 440.:
+        return (440. - nm) / 60., 0., 1.
+    if nm < 490.:
+        return 0., (nm - 440.) / 50., 1.
+    if nm < 510.:
+        return 0., 1., (510. - nm) / 20.
+    if nm < 580.:
+        return (nm - 510.) / 70., 1., 0.
+    if nm < 645.:
+        return 1., (645. - nm) / 65., 0.
+    return 1., 0., 0.
+
+
+def lightness(red: float, green: float, blue: float) -> float:
+    """How light a color is, 0 (black) to 1 (white)"""
+    return 0.2126 * red + 0.7152 * green + 0.0722 * blue
+
+
+def light_background() -> bool:
+    """The plots have a light background (a dark one is the default of PyMoDAQ)"""
+    try:
+        return pg.mkColor(pg.getConfigOption('background')).lightness() > 128
+    except Exception:
+        return False
+
+
+def wavelength_color(nm: float, light: Optional[bool] = None) -> str:
+    """The color of a wavelength, as ``#rrggbb``: 450 nm is blue, 532 nm green, 589 nm yellow, 650 nm red
+
+    Between 400 and 700 nm it is the color of the rainbow at this wavelength. Below 400 nm it is the violet, above 700 nm
+    the red, and beyond the visible range (380 and 780 nm, ultraviolet and infrared) it goes greyer and greyer the
+    further it is, so that two ROIs there still have their own color. The colors are made lighter on a dark background and
+    darker on a light one when they could not be seen well (a yellow on white, a deep blue on black).
+
+    Parameters
+    ----------
+    nm: float
+        The wavelength; anything else than a number gives a grey
+    light: bool, optional
+        The background of the plots is light (default: what pyqtgraph is configured with)
+    """
+    if not math.isfinite(nm):
+        return PALETTE[7]
+    red, green, blue = (c ** 0.8 for c in _rainbow(min(max(nm, 400.), 700.)))  # (the gamma makes them a little brighter)
+    outside = max(VISIBLE_RANGE[0] - nm, nm - VISIBLE_RANGE[1], 0.)
+    if outside:
+        grey = min(outside / 250., 1.) * 0.55
+        red, green, blue = (c + (NEUTRAL - c) * grey for c in (red, green, blue))
+    level = lightness(red, green, blue)
+    if light_background() if light is None else light:
+        if level > LIGHT_BACKGROUND_CEILING:
+            red, green, blue = (c * LIGHT_BACKGROUND_CEILING / level for c in (red, green, blue))
+    elif level < DARK_BACKGROUND_FLOOR:
+        white = (DARK_BACKGROUND_FLOOR - level) / (1. - level)
+        red, green, blue = (c + (1. - c) * white for c in (red, green, blue))
+    return '#{:02x}{:02x}{:02x}'.format(*(min(255, max(0, round(c * 255))) for c in (red, green, blue)))
+
+
+def contrast_text(color: str) -> str:
+    """The color of a text which is read well on this color: black on a light one, white on a dark one"""
+    c = QtGui.QColor(color)
+    return '#000000' if lightness(c.redF(), c.greenF(), c.blueF()) > 0.55 else '#ffffff'
+
+
+def spectrum_roi_colors(rois, units: str, light: Optional[bool] = None) -> list[str]:
+    """The colors of the ROIs of a spectrum: each one has the color of the wavelength in the middle of its window
+
+    The edges of the windows are in the units of the axis of the spectrum: when it is not in nm (pixels, a spectrometer
+    which has no wavelengths) the colors are the ones of the palette, in the order of the ROIs.
+    """
+    if units != 'nm':
+        return [roi_color(index) for index in range(len(rois))]
+    return [wavelength_color((roi.start + roi.stop) / 2., light) for roi in rois]
 
 
 class RoiRegion(pg.LinearRegionItem):
@@ -69,6 +156,7 @@ class SpectrumPlot(pg.PlotWidget):
         for axis in ('left', 'bottom'):
             item.getAxis(axis).setStyle(tickFont=QtGui.QFont(self.font().family(), 7), tickTextOffset=2)
         item.getAxis('left').setWidth(42)
+        item.getAxis('bottom').enableAutoSIPrefix(False)  # (nm, not "knm" when the spectrum goes beyond 1000 nm)
         self.curve = item.plot(pen=pg.mkPen(pg.getConfigOption('foreground'), width=1))
         self._message = pg.TextItem('waiting for data', color='#888888', anchor=(0.5, 0.5))
         item.addItem(self._message, ignoreBounds=True)
@@ -165,6 +253,20 @@ class SpectrumPlot(pg.PlotWidget):
                 self._labels[key].setText(label, color=color)
         finally:
             self._updating = False
+
+    def set_roi_color(self, key: str, color: str):
+        """Give a window (and its label) another color, for instance while it is dragged to another wavelength"""
+        region = self._regions.get(key)
+        if region is None:
+            return
+        region.setBrush(self._fill(color))
+        for line in region.lines:
+            line.setPen(pg.mkPen(color, width=2))
+        self._labels[key].setColor(color)
+
+    def region_color(self, key: str) -> str:
+        """The color of a window, as ``#rrggbb``"""
+        return self._regions[key].lines[0].pen.color().name()
 
     def set_locked(self, locked: bool):
         """Forbid (or allow again) to move and resize the ROIs"""
@@ -372,6 +474,7 @@ class PlotToggles(QtWidgets.QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._buttons: dict[str, QtWidgets.QPushButton] = {}
+        self._colors: dict[str, str] = {}
         layout = QtWidgets.QHBoxLayout(self)
         layout.setContentsMargins(2, 0, 2, 0)
         layout.addWidget(QtWidgets.QLabel('Plot:'))
@@ -400,6 +503,7 @@ class PlotToggles(QtWidgets.QWidget):
             button.setParent(None)
             button.deleteLater()
         self._buttons = {}
+        self._colors = {}
         for position, (name, text, color, plotted) in enumerate(entries):
             button = QtWidgets.QPushButton(text)
             button.setCheckable(True)
@@ -407,7 +511,8 @@ class PlotToggles(QtWidgets.QWidget):
             button.setToolTip('Show or hide this curve in the plot (what is recorded does not change)')
             button.setStyleSheet(
                 f'QPushButton {{ border: 2px solid {color}; border-radius: 4px; padding: 2px 8px; }}'
-                f'QPushButton:checked {{ background-color: {color}; color: white; }}')
+                f'QPushButton:checked {{ background-color: {color}; color: {contrast_text(color)}; }}')
+            self._colors[name] = color
             button.toggled.connect(lambda checked, key=name: self.toggled.emit(key, checked))
             self._row.insertWidget(position, button)
             self._buttons[name] = button
@@ -422,6 +527,10 @@ class PlotToggles(QtWidgets.QWidget):
     @property
     def texts(self) -> list[str]:
         return [button.text() for button in self._buttons.values()]
+
+    @property
+    def colors(self) -> list[str]:
+        return [self._colors[name] for name in self._buttons]
 
     def set_plotted(self, name: str, plotted: bool):
         """Follow a change made elsewhere, without emitting :attr:`toggled`"""

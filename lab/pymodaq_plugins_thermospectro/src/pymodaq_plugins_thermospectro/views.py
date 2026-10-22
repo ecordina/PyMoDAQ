@@ -17,7 +17,7 @@ from pymodaq_plugins_thermospectro.camera_widgets import ImagePlot, RectRoiManag
 from pymodaq_plugins_thermospectro.roi_manager import RoiManager
 from pymodaq_plugins_thermospectro.unit import Unit
 from pymodaq_plugins_thermospectro.widgets import (CurvesPlot, PlotToggles, SpectrumPlot, TEMPERATURE_COLOR,
-                                                   roi_color)
+                                                   roi_color, spectrum_roi_colors, wavelength_color)
 
 TEMPERATURE = 'temperature'  # the name of the button showing or hiding the temperature
 
@@ -90,7 +90,7 @@ class UnitView(QtCore.QObject):
         self.manager.add_clicked.connect(lambda: self.add_clicked.emit(self.number))
         self.manager.delete_clicked.connect(lambda key: self.delete_requested.emit(self.number, key))
         self.manager.reset_clicked.connect(lambda: self.reset_requested.emit(self.number))
-        self.spectrum_plot.roi_moving.connect(self.manager.show_edges)  # (its numbers follow a window being dragged)
+        self.spectrum_plot.roi_moving.connect(self._on_roi_moving)  # (its numbers follow a window being dragged)
         self.manager_box = QtWidgets.QGroupBox(self.unit.label)
         box_layout = QtWidgets.QVBoxLayout(self.manager_box)
         box_layout.setContentsMargins(2, 2, 2, 2)
@@ -115,6 +115,24 @@ class UnitView(QtCore.QObject):
         self.manager.edges_edited.connect(
             lambda key, start, stop: self.roi_edited.emit(self.number, key, start, stop))
 
+    def roi_colors(self, rois) -> list[str]:
+        """The color of each ROI: the one of the wavelength in the middle of its window (the spectrum being in nm),
+        else the ones of the palette"""
+        return spectrum_roi_colors(rois, self.unit.settings.axis_units)
+
+    def _on_roi_moving(self, key: str, *edges: float):
+        """A window is being dragged: its numbers and its color follow (the curves, which are in the settings, when it
+        is dropped)"""
+        self.manager.show_edges(key, *edges)
+        self._recolor(key, *edges)
+
+    def _recolor(self, key: str, start: float, stop: float):
+        """A window of the spectrum is being dragged to another wavelength: it takes the color of the new one"""
+        if self.unit.settings.axis_units == 'nm':
+            color = wavelength_color((start + stop) / 2.)
+            self.spectrum_plot.set_roi_color(key, color)
+            self.manager.set_color(key, color)
+
     @property
     def docks(self) -> dict[str, Dock]:
         return {f'spectrum{self.number}': self.spectrum_dock, f'rois{self.number}': self.curves_dock}
@@ -133,15 +151,17 @@ class UnitView(QtCore.QObject):
         self._update_roi_widgets(keys, rois)
 
         units = self.unit.axis_units
+        colors = self.roi_colors(rois)
         self._plotted = [index for index, roi in enumerate(rois) if roi.plot]
-        self.curves_plot.set_curves([(roi.label(units), roi_color(index), False)
+        self.curves_plot.set_curves([(roi.label(units), colors[index], False)
                                      for index, roi in enumerate(rois) if roi.plot])
-        entries = [(key, f'{index + 1}  {roi.name}', roi_color(index), roi.plot)
+        entries = [(key, f'{index + 1}  {roi.name}', colors[index], roi.plot)
                    for index, (key, roi) in enumerate(zip(keys, rois))]
         show_temperature = self.has_temperature and settings.plot_temperature
         if self.has_temperature:
             entries.append((TEMPERATURE, 'T', TEMPERATURE_COLOR, settings.plot_temperature))
-        if self.toggles.names != [entry[0] for entry in entries] or self.toggles.texts != [entry[1] for entry in entries]:
+        if (self.toggles.names != [entry[0] for entry in entries] or self.toggles.texts != [entry[1] for entry in entries]
+                or self.toggles.colors != [entry[2] for entry in entries]):
             self.toggles.set_entries(entries)
         else:
             for name, _, _, plotted in entries:
@@ -161,10 +181,10 @@ class UnitView(QtCore.QObject):
         for key in plot.roi_keys:
             if key not in keys:
                 plot.remove_roi(key)
+        colors = self.roi_colors(rois)
         for index, (key, roi) in enumerate(zip(keys, rois)):
-            plot.set_roi(key, roi.start, roi.stop, roi_color(index), str(index + 1))
-        self.manager.set_rois(keys, rois, [roi_color(index) for index in range(len(keys))], settings.axis_units,
-                              plot.x_range, plot.pitch)
+            plot.set_roi(key, roi.start, roi.stop, colors[index], str(index + 1))
+        self.manager.set_rois(keys, rois, colors, settings.axis_units, plot.x_range, plot.pitch)
 
     def set_title(self):
         title = self.unit.title
@@ -252,6 +272,13 @@ class CameraView(UnitView):
     rect_edited = QtCore.Signal(int, str, float, float, float, float)
     add_requested = QtCore.Signal(int, float, float)
     PLOT_NAME = 'Image'
+
+    def roi_colors(self, rois) -> list[str]:
+        """The ROIs of an image have no wavelength: the colors of the palette, in the order of the ROIs"""
+        return [roi_color(index) for index in range(len(rois))]
+
+    def _recolor(self, key: str, *edges: float):
+        pass  # (a rectangle keeps its color: it is the one of its place in the list)
 
     def _make_plot(self):
         return ImagePlot(self.unit.label)
