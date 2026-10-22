@@ -79,7 +79,7 @@ class TestRectRoi:
 
         assert roi.value(gradient()) == pytest.approx(14.5 + 100. * 24.5)
         assert roi.label() == 'Spot'
-        assert roi.label(with_range=True) == 'Spot (x 10-20, y 20-30 pixel)'
+        assert roi.label(with_range=True) == 'Spot mean (x 10-20, y 20-30 pixel)'
         assert (roi.width, roi.height) == (10, 10)
 
     def test_what_is_wrong_with_a_roi(self):
@@ -179,7 +179,8 @@ class TestCameraSettings:
         assert param.child('camera').title() == 'Camera:'
         assert param.child('integration_time').title() == 'Exposure time:'
         assert not param.child('record', 'image').value()  # (an image is large: not by default)
-        assert [child.name() for child in param.child('record').children()] == ['image', 'image_interval', 'temperature']
+        assert [child.name() for child in param.child('record').children()] == [
+            'image', 'image_interval', 'temperature', 'integration_time', 'crop_interval']
         assert param.child('record', 'image_interval').value() == 60.0  # (a long log saves the image now and then)
         assert not hasattr(param.child('record'), 'spectrum') and 'spectrum' not in param.child('record').names
         assert settings.roi_keys == ['roi00', 'roi01', 'roi02', 'roi03']
@@ -272,6 +273,7 @@ class Bench:
         self.settings.set_rois([RectRoi('Spot', 10, 20, 20, 30), RectRoi('Corner', 100, 120, 60, 80)])
         self.settings.child('integration_time').setValue(20.)
         self.settings.child('readout_time').setValue(0.1)
+        self.settings.child('record', 'integration_time').setValue(False)  # (it has its own tests)
         self.unit = CameraUnit(self.settings, FakeManager(*[m for m in (self.camera, self.thermostat) if m]))
         self.unit.attach()
         self.measurements = []
@@ -754,6 +756,7 @@ class TestCameraRecording:
         camera_module, thermostat = FakeCamera('Camera1'), FakeThermostat('Thermo1')
         bench_unit.set_modules(['Camera1'], ['Thermo1'], 'Camera1', 'Thermo1')
         bench_unit.set_rois([RectRoi('Spot', 10, 20, 20, 30), RectRoi('Corner', 100, 120, 60, 80)])
+        bench_unit.child('record', 'integration_time').setValue(False)  # (it has its own tests)
         unit = CameraUnit(bench_unit, FakeManager(camera_module, thermostat))
         unit.attach()
         return unit
@@ -781,6 +784,6 @@ class TestCameraRecording:
         image = dtes['Unit3_Image'][0]
         assert image.origin == 'Camera1' and np.array_equal(image.data[0], gradient() + 2)
         rois = dtes['Unit3_ROIs'][0]
-        assert rois.labels == ['Spot (x 10-20, y 20-30 pixel)', 'Corner (x 100-120, y 60-80 pixel)']
+        assert rois.labels == ['Spot mean (x 10-20, y 20-30 pixel)', 'Corner mean (x 100-120, y 60-80 pixel)']
         assert rois.data[0][0] == pytest.approx(14.5 + 100. * 24.5 + 2)
         assert all(dte.timestamp == 1002. for dte in dtes.values())

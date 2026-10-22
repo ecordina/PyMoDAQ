@@ -428,9 +428,10 @@ class TestChanges:
 
 
 class TestLock:
-    FREE = [('plot_temperature',), ('rois', 'roi00', 'plot'), ('rois', 'roi05', 'plot')]
-    LOCKED = [('integration_time',), ('readout_time',), ('spectrometer',), ('thermostat',), ('enabled',),
-              ('record', 'spectrum'), ('record', 'temperature'), ('rois', 'roi00', 'start'),
+    FREE = [('plot_temperature',), ('integration_time',), ('rois', 'roi00', 'plot'), ('rois', 'roi05', 'plot')]
+    LOCKED = [('readout_time',), ('intensity_units',), ('per_integration',), ('spectrometer',), ('thermostat',),
+              ('enabled',), ('record', 'spectrum'), ('record', 'temperature'), ('record', 'integration_time'),
+              ('rois', 'roi00', 'start'),
               ('rois', 'roi00', 'stop'), ('rois', 'roi00', 'name'), ('rois', 'roi00', 'record'),
               ('rois', 'add_roi'), ('rois', 'reset_rois'),
               ('ramp', 'run'), ('ramp', 'mode'), ('ramp', 'initial'), ('ramp', 'take_current'), ('ramp', 'hold_final'),

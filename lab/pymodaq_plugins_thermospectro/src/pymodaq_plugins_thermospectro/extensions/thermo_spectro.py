@@ -397,8 +397,9 @@ class ThermoSpectro(CustomExt):
             if unit.state == UnitState.IDLE:
                 self._modules_changed(unit)
         elif kind == 'integration':
-            if unit.state == UnitState.LIVE:
-                unit.apply_integration_time()
+            unit.integration_changed()  # (during an experiment: before the next readout)
+        elif kind == 'units':  # (the intensity unit, or the division by the integration time: the curves start again)
+            self._rois_changed(unit, reset=True)
         elif kind == 'readout':
             unit.update_timing()
         elif kind == 'plot_temperature':
@@ -412,6 +413,8 @@ class ThermoSpectro(CustomExt):
             self._rois_changed(unit)
         elif kind in ('roi_record', 'roi_plot'):
             self._rois_changed(unit)
+        elif kind == 'roi_aggregation':  # (what the curve of the ROI shows is not the same any more: it starts again)
+            self._rois_changed(unit, reset=True)
 
     def child_added(self, param: Parameter, data):
         for unit in self.units:
@@ -1006,8 +1009,8 @@ class ThermoSpectro(CustomExt):
             self.add_roi(number, position, y)
 
     def _on_roi_field_edited(self, number: int, key: str, field: str, value):
-        """The user changed the name or the *Record* box of a ROI in the ROI manager: its settings follow (and the
-        settings do the rest, as when they are edited by hand)"""
+        """The user changed the name, the *Value* or the *Record* box of a ROI in the ROI manager: its settings follow
+        (and the settings do the rest, as when they are edited by hand)"""
         unit = self.unit(number)
         if self._run_active or key not in unit.settings.roi_keys:
             return

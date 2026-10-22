@@ -31,10 +31,12 @@ For each spectrometer and for the camera, a *unit*:
   wait at the final value, the way back, a wait, repeated as many times as asked (a **cycle of ramps**). **When the ramps
   are over the log goes on**, with the controller held where they ended (the initial value, the bottom, or the final value,
   the top: your choice), until you press Stop;
-* what is **recorded**: the **ROIs**, the **temperature**, and now and then the **full spectrum** / the **full image**
-  (each can be left out), in an **h5 file in SWMR mode**, readable by another program while it is written, whose folder
-  and name you choose and in which you write the **protocol** of the experiment and the **observations** you make while it
-  runs (the *Saving* tab);
+* what is **recorded**: the **ROIs**, the **temperature**, the **integration time** of each readout (it can be changed
+  while the experiment runs), and now and then the **full spectrum** / the **full image** (each can be left out), in an
+  **h5 file in SWMR mode**, readable by another program while it is written, whose folder and name you choose and in
+  which you write the **protocol** of the experiment and the **observations** you make while it runs (the *Saving*
+  tab). The **units** are kept (the intensity unit you give, per ms of integration if you ask for the values to be divided
+  by the integration time). **``lab_export FILE.h5``** turns the file into csv files, tif files (T, C, Y, X) and a text;
 * the plots: the spectrum (the image of the camera) with its ROIs, and the ROIs over time with the temperature on top of
   them on its own scale. Every plot can be closed at any time and opened again.
 
@@ -50,7 +52,7 @@ PyMoDAQ runs from (an editable install, so that changes are taken into account w
 
     python -m pip install -e /path/to/pymodaq_plugins_thermospectro
 
-The five commands are installed in the ``bin`` folder of the environment (``Scripts`` on Windows): to use them without
+The five commands (and ``lab_apps``, which lists them, and ``lab_export``, which converts the h5 files) are installed in the ``bin`` folder of the environment (``Scripts`` on Windows): to use them without
 activating the environment, give their full path or make aliases (``alias thermo_camera=/path/to/env/bin/thermo_camera``).
 
 
@@ -104,6 +106,26 @@ Using it
    shows the time elapsed and left. While it runs, write what you observe in the field of the toolbar (or in the *Saving*
    tab) and press Enter: it is saved in the file, with its time.
 
+**The integration time.** It is saved with each readout (the integration time the instrument was set to for that
+readout, in ms: ``Unit1_Integration``; *The integration time* under *Record to disk*, on by default) and **it can be changed
+while an experiment runs**: the field of the settings stays usable, the instrument is given the new time before its next
+readout, and each readout is saved with the time it was made with. A time which is not shorter than the readout time (as many
+times as the module averages) cannot be followed during an experiment: it is refused, told, and the setting goes back to what
+the instrument is set to. The instrument may accept only the closest time it can (its limits): the saved time is the one it
+accepted.
+
+**Per ms of integration** (a box under the readout time): the value of each ROI, of the spectrometers and the aggregated ROIs
+of the camera, is divided by the integration (exposure) time, in ms, of its readout, so that the values (the curves and the
+file) are per ms and do not jump when the time is changed. It cannot be changed during an experiment. The full spectra, the
+images and the crops are saved as they come, with the integration time next to them. ``lab_export`` can divide them too
+(``--per-integration-time``).
+
+**Units.** *Intensity unit* (under the readout time, ``counts`` by default) is the unit of what the instrument measures (the
+plugins of the instruments do not say): it is on the axis of the curves and saved with the data; the values divided by the
+integration time are in that unit per ms (``counts/ms``). The temperature is in the unit of its thermal controller, the
+integration time in ms, the wavelengths in nm, the time in s: they are all saved with their data and written in the files of
+``lab_export``.
+
 A temperature to hold (or a ramp) which is outside the range of the controller (the *Bounds* of its module, filled by
 ``QNW_TC`` with the range of its holder) is refused when you press Start.
 
@@ -138,7 +160,7 @@ on (the controllers are held, or the ramps are over) there is nothing to bring b
 
 The modes, the ROIs, the recording options, the settings and the file (its folder and its name, the title, the sample, the
 operator and the protocol) cannot be changed during a log; the buttons showing or hiding a ROI or the temperature can be
-used, and so can the observations. The controller is only given set-points: protect it with the bounds of its
+used, and so can the observations and the integration time. The controller is only given set-points: protect it with the bounds of its
 actuator (*Set bounds* in the settings of the DAQ_Move), the extension does not know its limits (a Quantum Northwest TC 125
 refuses a temperature it does not accept).
 
@@ -163,8 +185,18 @@ are drawn on the image, where a rectangle is dragged to move it and by its corne
 manager (the edges are in pixels, *x* along the columns and *y* along the rows). Double click on the image to add one,
 right click on a rectangle to delete it. They are remembered in ``rois.json`` too.
 
+**What a ROI of the camera gives** (*Value* in the ROI manager and in the settings of the ROI, for each ROI): the
+**mean** of its pixels (the default), their **sum**, **median**, **min**, **max** or **std** (the standard deviation), each a
+number at each readout, plotted and saved in the csv file with the others; or **crop**: the ROI is just a crop, its pixels
+themselves are saved at each readout (or every *Crops every* seconds, under *Record to disk*), as images, in a tif file of
+its own once converted. A crop has nothing to plot (no curve, no button), and its rectangle is drawn dashed on the image. The
+axis of the curves says what they are (the legend adds it when they are not all the same) and their units. A crop must be inside
+the image: the experiment does not start if one is outside, and says which. A ROI gives one thing: to have a ROI both as a
+number and as a crop, make two ROIs of the same rectangle. The *Value* of the ROIs is remembered with them.
+
 The full image is not recorded by default (it is megabytes): tick *The full image* under *Record to disk*, and say
-how often with *Full image every*. The groups of the file are ``Unit3_Image``, ``Unit3_ROIs``, ``Unit3_Temperature`` and
+how often with *Full image every*. The groups of the file are ``Unit3_Image``, ``Unit3_ROIs`` (the ROIs which are numbers),
+``Unit3_Crop1``, ``Unit3_Crop2``... (the ROIs which are crops), ``Unit3_Integration``, ``Unit3_Temperature`` and
 ``Unit3_Program``.
 
 **One thermostat for a camera and a spectrometer.** The camera and a spectrometer can share a thermostat: both are
@@ -179,7 +211,8 @@ The ROI manager
 
 The **ROI manager** is the tab next to *Settings* and *Saving*. It has a table for each spectrometer (and one for the camera), one row per ROI:
 its number and color (those of its window on the spectrum), its name, its two edges (*From* and *To*, in the units of
-the spectrum), the *Record* and *Plot* boxes, and a button to delete it.
+the spectrum; the four edges of a rectangle for the camera, with its *Value*, see below), the *Record* and *Plot* boxes, and a
+button to delete it.
 
 The wavelengths are always in **nm** (the axis does not switch to *knm* beyond 1000 nm). **The color of a ROI of a
 spectrometer is the color of the light of the wavelength in the middle of its window**: a ROI between 440 and 460 nm is blue
@@ -244,37 +277,53 @@ written only while a log runs and *Do logging* is on (otherwise they could not b
 says why). The file stays readable by another program while observations are added (SWMR).
 
 
-Csv and tif files instead of the h5 file
-========================================
+``lab_export``: csv, tif and text files from the h5 file
+========================================================
 
-``tools/thermospectro_export.py`` (also in the export folder of the Windows computer) turns the h5 file of an experiment
-into files which are easier to use. It is a single script, which does not need PyMoDAQ, only ``numpy``, ``h5py`` and
-``tifffile`` (``python -m pip install tifffile``)::
+``lab_export`` is a command (it is installed with the package, next to ``lab_apps``) which turns the h5 file of an experiment
+into the files the usual tools read::
 
-    python thermospectro_export.py Dataset_20260101_000.h5
+    lab_export Pomme_20261022_153012.h5            # the files go next to the h5 file
+    lab_export Pomme_20261022_153012.h5 --list     # only tells what the file holds
+    lab_export *.h5 -o export                      # several files, in the folder "export" (``*`` works on Windows too)
 
-* ``Dataset_20260101_000_spectrometer1.csv`` for each spectrometer: one row per readout,
-  ``time (s) | temperature (°C) | ROI 1 | ROI 2 | ... | full spectrum`` (the full spectrum is one column of intensities
-  separated by spaces, its wavelengths are in ``..._wavelengths.csv``; ``--spectrum columns`` makes one column per
-  wavelength instead, ``--spectrum none`` leaves it out);
-* ``Dataset_20260101_000_camera.tif`` for the camera: the images stitched in an ImageJ hyperstack (axes Time, Channel, Y,
-  X: open it with Fiji / ImageJ or ``tifffile.imread``), and ``..._camera.csv``: one row per image (the row is the number
-  of the image) with ``time (s) | temperature (°C) | spectrometer 1 ROI 1 | ... | camera ROI 1 | ...``. The spectrometer
-  is read out at other instants than the camera: its value is the one of the closest readout (``--interpolate`` for a
-  linear interpolation). The images are there only if *The full image* was ticked.
+(After a ``git pull`` which brings it, install the package again to get the command: ``python lab/install_lab.py``, or ``python -m
+pip install -e lab/pymodaq_plugins_thermospectro``. Without installing it, ``python
+lab/pymodaq_plugins_thermospectro/tools/thermospectro_export.py FILE.h5`` does the same, and ``export.py`` of the package is a
+single file which needs only ``numpy``, ``h5py`` and ``tifffile``: it can be copied to any computer, PyMoDAQ is not needed.)
+The names of the new files start with the one of the h5 file:
 
-In a long log the whole spectrum (image) is saved only every so often: the csv of a spectrometer then has one row per
-readout of the ROIs with an empty ``full spectrum`` cell where none was saved, the csv of the camera has one row per image
-(the pages of the tif) and ``..._camera_log.csv`` has one row per readout, with the page of the tif where there is an image.
+* **the values of a spectrometer** and of its thermal controller, ``..._spectrometer1.csv``: one row per readout,
+  ``time (s) | temperature (°C) | integration time (ms) | ROI 1 (450-455 nm) [counts] | ROI 2 ... [counts] | ...`` (the temperature if
+  there is a thermal controller, the integration time if it was saved, each ROI which was recorded; the program of the ramp with
+  ``--program``);
+* **the full spectra**, if they were saved, in a file of their own, ``..._spectrometer1_spectra.csv``: one row per spectrum,
+  ``time (s) | temperature (°C) | integration time (ms) | 400.123 nm | 400.456 nm | ...`` (one column per wavelength);
+* **the camera**: ``..._camera.csv`` has one row per readout, ``time (s) | temperature (°C) | integration time (ms) | ROI 1 sum (x 10-18,
+  y 5-13 pixel) [counts] | ... | tif frame``, with the ROIs which give a number (mean, sum, median, min, max or std, as their name
+  says) and, where an image was saved, its frame in the tif; ``..._camera.tif`` has the images (*The full image*) as a time
+  series of the axes **T, C, Y, X** (an ImageJ hyperstack: Fiji / ImageJ, ``tifffile.imread``; the time and the temperature are
+  the labels of the frames), and ``..._camera_crop_<name of the ROI>.tif`` the pixels of each ROI which is a crop, the same kind
+  of tif. ImageJ cannot open files of more than 4 GB (BigTIFF): a longer series is split in ``..._part01.tif``,
+  ``..._part02.tif``... and the csv file has the columns ``tif file`` and ``tif frame`` (from 1, as ImageJ counts);
+* **the observations and the protocol**: ``..._experiment.txt`` is a text with the title, the sample, the operator, the protocol,
+  the observations noted while the experiment ran (with the time since the start and the clock time), the instruments, the ROIs
+  (and what each one gives), the integration times, the units and the list of the files which were written; the observations
+  are also in ``..._notes.csv`` (``time (s) | clock time | observation``).
 
-* ``Dataset_20260101_000_notes.csv``: the observations, one row each, ``time (s) | clock time | observation`` (the clock time is
-  the one of the computer which converts the file), and ``Dataset_20260101_000_protocol.txt``: the title, the sample, the
-  operator, the application, when the file was made and the protocol. They are written when the file has them.
+What is not in the file (a spectrometer or a camera which was not used, a temperature, a full spectrum, an image, observations
+which were not recorded) is left out; the text is always written. **The units are in the headers**, in square brackets for what
+is measured: ``[counts]``, or ``[counts/ms]`` for the values which were divided by the integration time in the extension, or the
+unit you gave; the time is in seconds from the first measurement of the experiment, **the same zero in all the files**
+(``--absolute-time`` for epoch seconds). The csv files are in UTF-8 with a signature, so that Excel shows ``°C``.
 
-The time is in seconds from the first measurement of the experiment, the same zero in all the files
-(``--absolute-time`` for epoch seconds). Other options: ``--short-names`` (``ROI 1`` instead of ``ROI 1 (454.2-464.6 nm)``),
-``--program`` (the set-point, cycle and phase of the ramp), ``--no-tif``, ``--delimiter``, ``-o FOLDER``,
-``--experiment N`` and ``--list`` (what the file holds).
+Options: ``--per-integration-time`` divides the values of the ROIs and the spectra which were saved as they were measured by
+the integration time of each readout (``counts/ms``; what was divided in the extension is not divided twice, and it says so),
+``--short-names`` (``ROI 1 [counts]`` instead of ``ROI 1 (454.2-464.6 nm) [counts]``), ``--no-spectra``, ``--no-tif``, ``--program`` (the
+set-point, cycle and phase of the ramp), ``--delimiter``, ``-o FOLDER``, ``--experiment N`` (the experiment of the file, the last one by
+default), ``--with-spectrometers`` (in the csv of the camera, add the temperature and the ROIs of the spectrometers at the readouts of
+the camera: the closest readout of the spectrometer, or ``--interpolate``). The spectra are read from the file a few hundred
+rows at a time: a log of days does not have to fit in memory.
 
 
 The data file
@@ -287,7 +336,11 @@ their title (``Detector000``, ``Actuator000``... only number them):
 ====================== ===================================================================================
 ``Unit1_Spectrum``     the full spectra, with their wavelengths (*Unit2_...* for the second spectrometer), every
                        *Full spectrum every* seconds (``Unit3_Image``: the images of the camera)
-``Unit1_ROIs``         one array per recorded ROI, labeled like ``ROI 1 (454.2-464.6 nm)``
+``Unit1_ROIs``         one array per recorded ROI, labeled like ``ROI 1 (454.2-464.6 nm)`` (``ROI 1 sum (x 10-18, y 5-13
+                       pixel)`` for a camera), in the unit of the values (``units`` of the arrays, ``values_units`` of the group)
+``Unit3_Crop1``...     for a camera, the pixels of each ROI which is a crop: one image (or several channels) per readout,
+                       with the name and the rectangle of the ROI in the attribute ``roi``
+``Unit1_Integration``  the integration (exposure) time of each readout, in ms
 ``Unit1_Temperature``  the measured temperature
 ``Unit1_Program``      the set-point, the cycle and the phase code of the ramp (``phase_codes`` attribute: idle 0,
                        approach 1, ramp 2, hold final 3, back 4, hold initial 5, return 6, done 7, **hold 8**: the
@@ -296,6 +349,11 @@ their title (``Detector000``, ``Actuator000``... only number them):
 ``Notes``              the observations: the arrays ``time`` (epoch seconds, the same time as the data) and ``text``
                        (utf-8), enlarged by each observation
 ====================== ===================================================================================
+
+The units are kept: the arrays have their ``units`` (the temperature in the unit of the thermal controller, the integration time in
+ms, the values of the ROIs in the intensity unit, ``counts/ms`` if they were divided by the integration time, the full spectra
+and images in the intensity unit) and the groups of the ROIs say so in ``values_units``, ``intensity_units`` and
+``per_integration``.
 
 What was written about the experiment is in the attributes ``experiment_title``, ``sample``, ``operator``, ``protocol`` and
 ``application`` of the group ``RawData`` (written the way PyMoDAQ writes its attributes, as a small json text: the H5 browser

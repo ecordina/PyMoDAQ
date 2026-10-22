@@ -136,8 +136,8 @@ class TestCameraWithSpectrometers:
             assert experiment.attribute('Unit3_ROIs', 'camera') == 'Camera1'
             assert experiment.attribute('Unit3_ROIs', 'thermostat') == 'Thermo1'
             rois = json.loads(experiment.attribute('Unit3_ROIs', 'rois'))
-            assert rois[0] == {'name': 'ROI 1', 'x0': 10.0, 'x1': 18.0, 'y0': 5.0, 'y1': 13.0}
-            assert experiment.label('Unit3_ROIs', 0).startswith('ROI 1 (x 10-18, y 5-13')
+            assert rois[0] == {'name': 'ROI 1', 'x0': 10.0, 'x1': 18.0, 'y0': 5.0, 'y1': 13.0, 'aggregation': 'mean'}
+            assert experiment.label('Unit3_ROIs', 0).startswith('ROI 1 mean (x 10-18, y 5-13')
             # the thermostat followed the ramp of the spectrometer: the camera saw it
             temperature = experiment.zero_d('Unit3_Temperature')
             assert temperature.max() > 1.0

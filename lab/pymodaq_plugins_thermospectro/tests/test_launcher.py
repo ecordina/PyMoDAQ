@@ -90,6 +90,7 @@ class TestCommandLine:
         scripts = dict(project['project']['scripts'])
 
         assert scripts.pop('lab_apps') == 'pymodaq_plugins_thermospectro.apps:main'  # (the list of the applications)
+        assert scripts.pop('lab_export') == 'pymodaq_plugins_thermospectro.export:main'  # (the converter of the h5 files)
         assert scripts == {command: f'pymodaq_plugins_thermospectro.launcher:{command}' for command in COMMANDS}
         assert 'thermospectro' not in project['project']['scripts']  # (the command of the presets is gone)
 

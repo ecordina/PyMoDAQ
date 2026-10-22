@@ -15,13 +15,16 @@ from pymodaq_data.data import DataRaw
 from pymodaq_gui.plotting.data_viewers.viewer2D import Viewer2D
 from qtpy import QtCore, QtGui, QtWidgets
 
-from pymodaq_plugins_thermospectro.camera import RectRoi
+from pymodaq_plugins_thermospectro.camera import MODES, RectRoi
 from pymodaq_plugins_thermospectro.roi_manager import (BADGE_WIDTH, CHECK_WIDTH, DELETE_WIDTH, EDGE_WIDTH,
                                                        EdgeSpinBox, _quietly)
 
 #: How the ROIs of a camera are set up, for the user
 HINT = ('Drag a rectangle (or one of its corners) on the image, or type its edges here. Double click on the image, '
-        'or right click, to add a ROI there.')
+        'or right click, to add a ROI there. Value: the number a ROI gives (the mean, sum, median, min, max or std '
+        'of its pixels), or crop: its pixels are saved as images (its rectangle is dashed).')
+#: The width of the column of the value (a short word in a drop-down list)
+VALUE_WIDTH = 70
 
 
 class _CameraViewer2D(Viewer2D):
@@ -180,10 +183,16 @@ class ImagePlot(QtWidgets.QWidget):
         for handle in roi.getHandles():
             handle.setVisible(not self._locked)
 
-    def set_roi(self, key: str, x0: float, x1: float, y0: float, y1: float, color: str, label: str = ''):
+    @staticmethod
+    def _pen(color: str, crop: bool = False) -> QtGui.QPen:
+        """The pen of a rectangle: dashed for a ROI which is a crop (it gives its pixels, not a number)"""
+        return pg.mkPen(color, width=2, style=QtCore.Qt.PenStyle.DashLine if crop else QtCore.Qt.PenStyle.SolidLine)
+
+    def set_roi(self, key: str, x0: float, x1: float, y0: float, y1: float, color: str, label: str = '',
+                crop: bool = False):
         """Create or move the rectangle of a ROI, without emitting :attr:`roi_changed`
 
-        A rectangle is never drawn smaller than a pixel.
+        A rectangle is never drawn smaller than a pixel; it is dashed if the ROI is a crop.
         """
         x0, x1 = (x0, x1) if x0 <= x1 else (x1, x0)
         y0, y1 = (y0, y1) if y0 <= y1 else (y1, y0)
@@ -192,7 +201,7 @@ class ImagePlot(QtWidgets.QWidget):
         self._updating = True
         try:
             if roi is None:
-                roi = pg.RectROI((x0, y0), (x1 - x0, y1 - y0), pen=pg.mkPen(color, width=2), movable=True,
+                roi = pg.RectROI((x0, y0), (x1 - x0, y1 - y0), pen=self._pen(color, crop), movable=True,
                                  resizable=True, rotatable=False, invertible=False, scaleSnap=True, translateSnap=True,
                                  snapSize=1.0)
                 if self._shape is not None:
@@ -209,7 +218,7 @@ class ImagePlot(QtWidgets.QWidget):
             else:
                 roi.setPos((x0, y0))
                 roi.setSize((x1 - x0, y1 - y0))
-                roi.setPen(pg.mkPen(color, width=2))
+                roi.setPen(self._pen(color, crop))
                 self._labels[key].setText(label, color=color)
         finally:
             self._updating = False
@@ -299,16 +308,23 @@ class RectRoiRow(QtWidgets.QWidget):
     edges_edited: Signal(str, float, float, float, float)
         The user typed an edge: the key of the ROI and its edges x0, x1, y0, y1
     name_edited: Signal(str, str)
+    aggregation_edited: Signal(str, str)
+        The user chose what the ROI gives: one of :data:`~.camera.MODES`
     record_toggled: Signal(str, bool)
     plot_toggled: Signal(str, bool)
     delete_clicked: Signal(str)
     """
     edges_edited = QtCore.Signal(str, float, float, float, float)
     name_edited = QtCore.Signal(str, str)
+    aggregation_edited = QtCore.Signal(str, str)
     record_toggled = QtCore.Signal(str, bool)
     plot_toggled = QtCore.Signal(str, bool)
     delete_clicked = QtCore.Signal(str)
 
+    VALUE_TIP = ('What this ROI gives at each measurement: one number made of its pixels (mean, sum, median, min, max, '
+                 'std: the standard deviation), or crop: its pixels themselves, saved as images (a tif file of their '
+                 'own), with nothing to plot')
+    PLOT_TIP = 'Show the value of this ROI in the plot (what is recorded does not change)'
     EDGE_NAMES = ('x0', 'x1', 'y0', 'y1')
     EDGE_TIPS = ('Left edge of the window (pixel)', 'Right edge of the window (pixel)',
                  'Top edge of the window (pixel, the first row is 0)', 'Bottom edge of the window (pixel)')
@@ -334,10 +350,14 @@ class RectRoiRow(QtWidgets.QWidget):
             box.setFixedWidth(EDGE_WIDTH - 14)
             box.setToolTip(tip)
             self.boxes[name] = box
+        self.aggregation = QtWidgets.QComboBox()
+        self.aggregation.addItems(MODES)
+        self.aggregation.setFixedWidth(VALUE_WIDTH)
+        self.aggregation.setToolTip(self.VALUE_TIP)
         self.record = QtWidgets.QCheckBox()
-        self.record.setToolTip('Save the value of this ROI (the mean of its pixels) at each measurement')
+        self.record.setToolTip('Save this ROI at each measurement: its value, or its pixels if it is a crop')
         self.plot = QtWidgets.QCheckBox()
-        self.plot.setToolTip('Show this ROI in the plot (what is recorded does not change)')
+        self.plot.setToolTip(self.PLOT_TIP)
         self.delete = QtWidgets.QToolButton()
         self.delete.setText('✕')
         self.delete.setToolTip('Delete this ROI')
@@ -350,6 +370,7 @@ class RectRoiRow(QtWidgets.QWidget):
         layout.addWidget(self.name, 1)
         for box in self.boxes.values():
             layout.addWidget(box)
+        layout.addWidget(self.aggregation)
         for box in (self.record, self.plot):
             cell = QtWidgets.QWidget()
             cell.setFixedWidth(CHECK_WIDTH)
@@ -362,6 +383,8 @@ class RectRoiRow(QtWidgets.QWidget):
         self.name.editingFinished.connect(self._name_finished)
         for index, box in enumerate(self.boxes.values()):
             box.valueChanged.connect(lambda value, i=index: self._edge_changed(i, value))
+        self.aggregation.activated.connect(
+            lambda _=0: self.aggregation_edited.emit(self.key, self.aggregation.currentText()))
         self.record.toggled.connect(lambda checked: self.record_toggled.emit(self.key, checked))
         self.plot.toggled.connect(lambda checked: self.plot_toggled.emit(self.key, checked))
         self.delete.clicked.connect(lambda _=False: self.delete_clicked.emit(self.key))
@@ -416,9 +439,15 @@ class RectRoiRow(QtWidgets.QWidget):
                 _quietly(box, box.setValue, value)
             box.setStyleSheet('color: #d62728;' if outside else '')
             box.setToolTip('This window is outside of the image: its value is empty' if outside else tip)
-        for box, value in ((self.record, roi.record), (self.plot, roi.plot)):
+        if self.aggregation.currentText() != roi.aggregation:
+            _quietly(self.aggregation, self.aggregation.setCurrentText, roi.aggregation)
+        # (a crop has no value to plot: its box is off and cannot be ticked until it is an aggregation again)
+        for box, value in ((self.record, roi.record), (self.plot, roi.plot and not roi.is_crop)):
             if box.isChecked() != bool(value):
                 _quietly(box, box.setChecked, bool(value))
+        self.plot.setEnabled(not roi.is_crop)
+        self.plot.setToolTip('A crop has no value to plot: its pixels are saved as images' if roi.is_crop
+                             else self.PLOT_TIP)
 
     def show_edges(self, x0: float, x1: float, y0: float, y1: float):
         """The rectangle is being dragged on the image: follow it (nothing is emitted)"""
@@ -430,7 +459,7 @@ class RectRoiRow(QtWidgets.QWidget):
     def set_locked(self, locked: bool):
         """What is plotted can still be changed, the rest cannot"""
         self._locked = locked
-        for widget in (self.name, *self.boxes.values(), self.record, self.delete):
+        for widget in (self.name, *self.boxes.values(), self.aggregation, self.record, self.delete):
             widget.setEnabled(not locked)
 
 
@@ -441,6 +470,7 @@ class RectRoiManager(QtWidgets.QWidget):
     ----------
     edges_edited: Signal(str, float, float, float, float)
     name_edited: Signal(str, str)
+    aggregation_edited: Signal(str, str)
     record_toggled: Signal(str, bool)
     plot_toggled: Signal(str, bool)
     delete_clicked: Signal(str)
@@ -449,6 +479,7 @@ class RectRoiManager(QtWidgets.QWidget):
     """
     edges_edited = QtCore.Signal(str, float, float, float, float)
     name_edited = QtCore.Signal(str, str)
+    aggregation_edited = QtCore.Signal(str, str)
     record_toggled = QtCore.Signal(str, bool)
     plot_toggled = QtCore.Signal(str, bool)
     delete_clicked = QtCore.Signal(str)
@@ -477,7 +508,7 @@ class RectRoiManager(QtWidgets.QWidget):
         columns = [('badge', '#', BADGE_WIDTH), ('name', 'Name', 0)] + \
                   [(name, text, EDGE_WIDTH - 14) for name, text in
                    zip(RectRoiRow.EDGE_NAMES, ('x from', 'x to', 'y from', 'y to'))] + \
-                  [('record', 'Record', CHECK_WIDTH), ('plot', 'Plot', CHECK_WIDTH), ('delete', '', DELETE_WIDTH)]
+                  [('aggregation', 'Value', VALUE_WIDTH), ('record', 'Record', CHECK_WIDTH), ('plot', 'Plot', CHECK_WIDTH), ('delete', '', DELETE_WIDTH)]
         for name, text, width in columns:
             label = QtWidgets.QLabel(text)
             align = QtCore.Qt.AlignmentFlag.AlignLeft if name == 'name' else (
@@ -526,6 +557,7 @@ class RectRoiManager(QtWidgets.QWidget):
         row = RectRoiRow(key)
         row.edges_edited.connect(self.edges_edited)
         row.name_edited.connect(self.name_edited)
+        row.aggregation_edited.connect(self.aggregation_edited)
         row.record_toggled.connect(self.record_toggled)
         row.plot_toggled.connect(self.plot_toggled)
         row.delete_clicked.connect(self.delete_clicked)

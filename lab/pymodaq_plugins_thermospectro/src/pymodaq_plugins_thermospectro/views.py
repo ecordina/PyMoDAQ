@@ -69,7 +69,7 @@ class UnitView(QtCore.QObject):
         self.spectrum_dock = Dock(self.PLOT_NAME.format(self.number), closable=True, autoOrientation=False)
         self.spectrum_dock.addWidget(self.spectrum_plot)
 
-        self.curves_plot = CurvesPlot('time', 'min', 'ROIs (mean of the pixels)', '')
+        self.curves_plot = CurvesPlot('time', 'min', 'ROIs: mean of the pixels', self.unit.value_units)
         self.toggles = PlotToggles()
         self.toggles.toggled.connect(lambda name, plotted: self.plot_toggled.emit(self.number, name, plotted))
         container = QtWidgets.QWidget()
@@ -150,13 +150,14 @@ class UnitView(QtCore.QObject):
         keys, rois = settings.roi_keys, settings.rois
         self._update_roi_widgets(keys, rois)
 
-        units = self.unit.axis_units
         colors = self.roi_colors(rois)
-        self._plotted = [index for index, roi in enumerate(rois) if roi.plot]
-        self.curves_plot.set_curves([(roi.label(units), colors[index], False)
-                                     for index, roi in enumerate(rois) if roi.plot])
+        plotted = [(index, roi) for index, roi in enumerate(rois) if roi.plot and self.plottable(roi)]
+        self._plotted = [index for index, _ in plotted]
+        self.curves_plot.set_curves([(self.curve_name(roi, [other for _, other in plotted]), colors[index], False)
+                                     for index, roi in plotted])
+        self.curves_plot.set_value_label(*self.value_label([roi for _, roi in plotted]))
         entries = [(key, f'{index + 1}  {roi.name}', colors[index], roi.plot)
-                   for index, (key, roi) in enumerate(zip(keys, rois))]
+                   for index, (key, roi) in enumerate(zip(keys, rois)) if self.plottable(roi)]
         show_temperature = self.has_temperature and settings.plot_temperature
         if self.has_temperature:
             entries.append((TEMPERATURE, 'T', TEMPERATURE_COLOR, settings.plot_temperature))
@@ -173,6 +174,19 @@ class UnitView(QtCore.QObject):
             if show_temperature else [])
         self.set_title()
         self._marker = None
+
+    @staticmethod
+    def plottable(roi) -> bool:
+        """The ROI has a value to plot"""
+        return True
+
+    def curve_name(self, roi, plotted) -> str:
+        """What the legend says of a curve (`plotted`: the ROIs which have one)"""
+        return roi.label(self.unit.axis_units)
+
+    def value_label(self, plotted) -> tuple[str, str]:
+        """What the axis of the curves says they are, and their units"""
+        return 'ROIs: mean of the pixels', self.unit.value_units
 
     def _update_roi_widgets(self, keys, rois):
         """The windows on the spectrum and the table of the ROI manager"""
@@ -294,6 +308,29 @@ class CameraView(UnitView):
 
     def _connect_manager(self):
         self.manager.edges_edited.connect(lambda key, *edges: self.rect_edited.emit(self.number, key, *edges))
+        self.manager.aggregation_edited.connect(
+            lambda key, aggregation: self.roi_field_edited.emit(self.number, key, 'aggregation', aggregation))
+
+    @staticmethod
+    def plottable(roi) -> bool:
+        """A crop has no value to plot: its pixels are saved as images"""
+        return not roi.is_crop
+
+    #: How each aggregation is called in the label of the axis
+    VALUE_NAMES = {'mean': 'mean', 'sum': 'sum', 'median': 'median', 'min': 'minimum', 'max': 'maximum',
+                   'std': 'standard deviation'}
+
+    def curve_name(self, roi, plotted) -> str:
+        """The name of the ROI, and its aggregation if the curves do not all have the same one"""
+        if len({other.aggregation for other in plotted}) > 1:
+            return f'{roi.name} ({roi.aggregation})'
+        return roi.name
+
+    def value_label(self, plotted) -> tuple[str, str]:
+        kinds = {roi.aggregation for roi in plotted}
+        if len(kinds) > 1:
+            return 'ROIs: see the legend', self.unit.value_units
+        return f'ROIs: {self.VALUE_NAMES[kinds.pop()] if kinds else "mean"} of the pixels', self.unit.value_units
 
     def _update_roi_widgets(self, keys, rois):
         plot = self.spectrum_plot
@@ -301,7 +338,7 @@ class CameraView(UnitView):
             if key not in keys:
                 plot.remove_roi(key)
         for index, (key, roi) in enumerate(zip(keys, rois)):
-            plot.set_roi(key, roi.x0, roi.x1, roi.y0, roi.y1, roi_color(index), str(index + 1))
+            plot.set_roi(key, roi.x0, roi.x1, roi.y0, roi.y1, roi_color(index), str(index + 1), crop=roi.is_crop)
         self.manager.set_rois(keys, rois, [roi_color(index) for index in range(len(keys))], plot.shape)
 
     def clear(self, message: str = 'waiting for data'):

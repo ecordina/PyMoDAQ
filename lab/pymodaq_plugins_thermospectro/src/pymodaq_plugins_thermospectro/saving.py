@@ -8,14 +8,23 @@ Each one is saved, or not, independently of the others:
     the full spectrum at each readout (the wavelengths are its axis). For a camera it is ``Unit3_Image``, the full image
 ``Unit1_ROIs``
     the value of each recorded ROI at each readout, one array per ROI
+``Unit1_Integration``
+    the integration (exposure) time at each readout, in ms: it can be changed during the experiment
 ``Unit1_Temperature``
     the temperature measured by the thermostat at each readout
 ``Unit1_Program``
     the set-point, the cycle and the phase of the temperature ramp (saved with the temperature, if a ramp is run, or
     the temperature held: the phase is then ``hold``)
+``Unit3_Crop1``, ``Unit3_Crop2``...
+    for a camera, the pixels of each ROI which is a crop (not an aggregation of its pixels: see :mod:`.camera`), one
+    image per readout (or every *Crops every* seconds)
 
 All the arrays of a unit are enlarged along a time axis made of the time (epoch seconds) at which each readout
 started: the same for the four groups of a unit.
+
+The units are kept: the arrays hold their ``units`` (the temperature in the unit of the thermostat, the integration time in
+ms, the values of the ROIs in the intensity unit of the unit, per ms if they were divided by the integration time), and
+the groups of the ROIs say it in their attributes ``values_units``, ``intensity_units`` and ``per_integration``.
 
 What the user wrote about the experiment (``experiment_title``, ``sample``, ``operator``, ``protocol``, and the
 ``application`` which made the file) is in the attributes of the group ``RawData``. The observations noted while it runs
@@ -41,7 +50,8 @@ import numpy as np
 from pymodaq_gui.parameter import Parameter
 
 from pymodaq_data.h5modules.data_saving import DataBundle
-from pymodaq_data.data import DataRaw, DataToExport
+from pymodaq_data import Unit
+from pymodaq_data.data import Axis, DataRaw, DataToExport
 
 from pymodaq_utils.logger import set_logger, get_module_name
 
@@ -49,6 +59,7 @@ from pymodaq.utils.data import DataActuator
 from pymodaq.utils.h5modules.module_saving import (
     ExtensionSaver, DetectorTimeSaver, ActuatorTimeSaver, GroupModuleType)
 
+from pymodaq_plugins_thermospectro.camera import window_ranges
 from pymodaq_plugins_thermospectro.ramp import PHASE_CODES
 from pymodaq_plugins_thermospectro.rois import unique_names
 
@@ -62,11 +73,34 @@ IMAGE = 'Image'  # what the full spectrum is for a camera
 ROIS = 'ROIs'
 TEMPERATURE = 'Temperature'
 PROGRAM = 'Program'
+INTEGRATION = 'Integration'
+CROP = 'Crop'  # followed by the number of the crop: Crop1, Crop2...
+
+
+#: What is written for "arbitrary units": pint reads ``a.u.`` as an atomic mass unit times a year, and ``au`` as an astronomical unit
+ARBITRARY_UNITS = ('a.u.', 'a.u', 'au', 'arb.u.', 'arb. u.', 'arb. units', 'arbitrary units', 'arbitrary unit')
+
+
+def pint_safe(units: str) -> str:
+    """The units as the data model of PyMoDAQ can hold them (a unit which pint does not know, or reads as something else
+    than what is meant, is dropped there: the groups say it in their attributes too)"""
+    if units.strip().lower() in ARBITRARY_UNITS:
+        return ''
+    try:
+        Unit(units)
+    except Exception:
+        return ''
+    return units
 
 
 def group_title(number: int, what: str) -> str:
     """The title of a group of the file: ``Unit1_ROIs``"""
     return f'Unit{number}_{what}'
+
+
+def crop_title(number: int, crop: int) -> str:
+    """The title of the group of the pixels of a ROI which is a crop (`crop` counted from 1): ``Unit3_Crop1``"""
+    return group_title(number, f'{CROP}{crop}')
 
 
 #: What a name of file cannot hold on one system or another
@@ -200,9 +234,18 @@ class UnitRecording:
     program: bool
         The unit runs a ramp
     rois: list of Roi
-        The ROIs which are saved, with names which are all different
+        The ROIs whose value is saved, with names which are all different
     roi_indices: list of int
         Where each of them is in the values of a measurement
+    crops: list of RectRoi
+        The ROIs of a camera which are saved as images, not as a value: their pixels (names which are all different)
+    integration: bool
+        The integration (exposure) time of each measurement is saved
+    intensity_units, value_units: str
+        What the detector measures, and the units of the values of the ROIs (per ms if they are divided by the
+        integration time)
+    per_integration: bool
+        The values of the ROIs are divided by the integration time of their measurement
     settings: Parameter
         A copy of the settings of the unit, saved with its groups
     detector_settings, thermostat_settings: Parameter
@@ -230,6 +273,11 @@ class UnitRecording:
     thermostat: str = ''
     main: str = SPECTRUM  # the group of the full data: the spectrum, or the image of a camera
     detector_kind: str = 'spectrometer'
+    crops: list = field(default_factory=list)
+    integration: bool = False
+    intensity_units: str = 'counts'
+    value_units: str = 'counts'
+    per_integration: bool = False
 
     @classmethod
     def from_unit(cls, unit) -> 'UnitRecording':
@@ -237,7 +285,10 @@ class UnitRecording:
         settings = unit.settings
         rois = settings.rois
         names = unique_names(rois)
-        indices = [index for index, roi in enumerate(rois) if roi.record]
+        crop = [getattr(roi, 'is_crop', False) for roi in rois]  # (a ROI of a camera may give its pixels)
+        indices = [index for index, roi in enumerate(rois) if roi.record and not crop[index]]
+        crops = [replace(roi, name=names[index]) for index, roi in enumerate(rois) if roi.record and crop[index]]
+        cls._check_crops(unit, crops)
         copy = Parameter.create(name=settings.param.name(), type='group', children=[])
         copy.restoreState(settings.param.saveState())
         thermostat = unit.thermostat
@@ -249,7 +300,27 @@ class UnitRecording:
                    thermostat_settings=thermostat.settings if thermostat is not None else None,
                    units=unit.units, integration_time=settings.integration_time, readout_time=settings.readout_time,
                    spectrometer=unit.title, thermostat=thermostat.title if thermostat is not None else '',
-                   main=IMAGE if settings.KIND == 'camera' else SPECTRUM, detector_kind=settings.KIND)
+                   main=IMAGE if settings.KIND == 'camera' else SPECTRUM, detector_kind=settings.KIND, crops=crops,
+                   integration=settings.record_integration, intensity_units=settings.intensity_units,
+                   value_units=settings.value_units, per_integration=settings.per_integration)
+
+    @staticmethod
+    def _check_crops(unit, crops: list):
+        """A crop which is outside of the image would never give anything to save: the experiment does not start
+
+        Raises
+        ------
+        ValueError
+            if a crop is outside of the last image
+        """
+        shape = getattr(getattr(unit, 'spectrum', None), 'shape', None)
+        if not crops or shape is None:
+            return
+        for roi in crops:
+            if window_ranges(shape, roi.x0, roi.x1, roi.y0, roi.y1) is None:
+                raise ValueError(f'{unit.label}: the crop {roi.name} (x {roi.x0:g}-{roi.x1:g}, y {roi.y0:g}-{roi.y1:g}) '
+                                 f'is outside of the image ({shape[1]} x {shape[0]} pixels): move it, or untick '
+                                 f'its Record box')
 
     @property
     def titles(self) -> list[str]:
@@ -259,6 +330,9 @@ class UnitRecording:
             titles.append(group_title(self.number, self.main))
         if self.rois:
             titles.append(group_title(self.number, ROIS))
+        titles += [crop_title(self.number, index) for index in range(1, len(self.crops) + 1)]
+        if self.integration:
+            titles.append(group_title(self.number, INTEGRATION))
         if self.temperature:
             titles.append(group_title(self.number, TEMPERATURE))
             if self.program:
@@ -268,6 +342,25 @@ class UnitRecording:
     @property
     def is_saved(self) -> bool:
         return bool(self.titles)
+
+
+def _crop_dtes(recording: UnitRecording, measurement) -> list[DataToExport]:
+    """The pixels of each crop of a camera, one DataToExport per crop (the channels of a color camera are kept)"""
+    full = measurement.spectrum.dwa
+    dtes = []
+    for index, roi in enumerate(recording.crops, 1):
+        found = window_ranges(measurement.spectrum.shape, roi.x0, roi.x1, roi.y0, roi.y1)
+        if found is None:  # (the image changed its size since the start)
+            continue
+        (row0, row1), (column0, column1) = found
+        data = [np.ascontiguousarray(np.asarray(array)[row0:row1, column0:column1]) for array in full.data]
+        axes = [Axis(label='y', units='pixel', data=np.arange(row0, row1, dtype=float), index=0),
+                Axis(label='x', units='pixel', data=np.arange(column0, column1, dtype=float), index=1)]
+        dwa = DataRaw(roi.name, data=data, axes=axes, labels=list(full.labels) or None,
+                      units=full.units or pint_safe(recording.intensity_units))
+        dwa.origin = recording.spectrometer
+        dtes.append(DataToExport(crop_title(recording.number, index), data=[dwa]))
+    return dtes
 
 
 def build_dtes(recording: UnitRecording, measurement) -> list[DataToExport]:
@@ -286,6 +379,8 @@ def build_dtes(recording: UnitRecording, measurement) -> list[DataToExport]:
         dwa = spectrum.dwa.deepcopy()
         dwa.origin = recording.spectrometer
         dwa.name = spectrum.dwa.name.split('/')[-1]
+        if not dwa.units:  # (the plugins do not say what their instrument measures: the user does)
+            dwa.force_units(pint_safe(recording.intensity_units))  # (units_as would convert the numbers)
         if spectrum.axis is not None and not [axis for axis in dwa.axes if axis.index == 0]:
             dwa.axes = [spectrum.axis.copy()]  # sent by the plugin only when it changes
         dtes.append(DataToExport(title, data=[dwa]))
@@ -294,7 +389,14 @@ def build_dtes(recording: UnitRecording, measurement) -> list[DataToExport]:
         units = measurement.spectrum.units
         dtes.append(DataToExport(title, data=[DataRaw(
             title, data=[np.array([float(measurement.values[index])]) for index in recording.roi_indices],
-            labels=[roi.label(units, with_range=True) for roi in recording.rois])]))
+            labels=[roi.label(units, with_range=True) for roi in recording.rois],
+            units=pint_safe(recording.value_units))]))
+    if recording.crops and measurement.crop_due:
+        dtes += _crop_dtes(recording, measurement)
+    if recording.integration:
+        title = group_title(number, INTEGRATION)
+        dtes.append(DataToExport(title, data=[DataRaw(
+            title, data=[np.array([float(measurement.integration_time)])], labels=['integration time'], units='ms')]))
     if recording.temperature:
         title = group_title(number, TEMPERATURE)
         dtes.append(DataToExport(title, data=[DataActuator(
@@ -349,6 +451,10 @@ class ThermoSpectroSaver(ExtensionSaver):
                     VirtualModule(group_title(number, recording.main), recording.detector_settings))
             if recording.rois:
                 self._detector_modules.append(VirtualModule(group_title(number, ROIS), recording.settings))
+            for index in range(1, len(recording.crops) + 1):
+                self._detector_modules.append(VirtualModule(crop_title(number, index), recording.detector_settings))
+            if recording.integration:
+                self._detector_modules.append(VirtualModule(group_title(number, INTEGRATION), recording.settings))
             if recording.temperature:
                 self._actuator_modules.append(
                     VirtualModule(group_title(number, TEMPERATURE), recording.thermostat_settings))
@@ -424,16 +530,28 @@ class ThermoSpectroSaver(ExtensionSaver):
         number = recording.number
         common = {'unit': number, recording.detector_kind: recording.spectrometer, 'thermostat': recording.thermostat,
                   'integration_time_ms': recording.integration_time, 'readout_time_s': recording.readout_time}
-        for what in (SPECTRUM, IMAGE, ROIS, TEMPERATURE, PROGRAM):
+        crops = {f'{CROP}{index}': roi for index, roi in enumerate(recording.crops, 1)}
+        for what in (SPECTRUM, IMAGE, ROIS, *crops, INTEGRATION, TEMPERATURE, PROGRAM):
             node = self.current_nodes.get(group_title(number, what))
             if node is None:
                 continue
             for key, value in common.items():
                 h5saver.set_attr(node, key, value)
+            if what in crops:
+                roi = crops[what]
+                h5saver.set_attr(node, 'roi', json.dumps(
+                    {key: value for key, value in roi.to_dict().items() if key not in ('record', 'plot')}))
             if what == ROIS:
                 h5saver.set_attr(node, 'rois', json.dumps(
                     [{key: value for key, value in roi.to_dict().items() if key not in ('record', 'plot')}
                      for roi in recording.rois]))
+            if what in (ROIS, SPECTRUM, IMAGE, *crops):
+                h5saver.set_attr(node, 'intensity_units', recording.intensity_units)
+            if what == ROIS:
+                h5saver.set_attr(node, 'values_units', recording.value_units)
+                h5saver.set_attr(node, 'per_integration', bool(recording.per_integration))
+            if what == INTEGRATION:
+                h5saver.set_attr(node, 'integration_units', 'ms')
             if what == TEMPERATURE:
                 h5saver.set_attr(node, 'temperature_units', recording.units)
             if what == PROGRAM:

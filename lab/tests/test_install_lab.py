@@ -279,7 +279,7 @@ class TestMain:
 
         told = capsys.readouterr().out
         scripts = toml.load(SCRIPT.parent / 'pymodaq_plugins_thermospectro' / 'pyproject.toml')['project']['scripts']
-        applications = [name for name in scripts if name != 'lab_apps']
+        applications = [name for name in scripts if name not in ('lab_apps', 'lab_export')]
         assert list(install_lab.APPLICATIONS) == applications  # (what the hint says is what the package installs)
         assert all(command in told for command in scripts) and 'qnw_tc_check' in told
         assert 'thermospectro ' not in told and 'Preset' not in told and 'qnw_tc_start' not in told

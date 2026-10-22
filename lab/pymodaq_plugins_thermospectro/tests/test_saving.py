@@ -30,8 +30,11 @@ pytestmark = pytest.mark.filterwarnings('ignore')
 X = np.linspace(400., 900., 1001)
 
 
-def make_unit(number=1, rois=None, run_ramp=True, thermostat=True):
-    """A unit (not running) with fake modules, as the extension would hand it to the saver"""
+def make_unit(number=1, rois=None, run_ramp=True, thermostat=True, integration=False, units=None,
+              per_integration=False):
+    """A unit (not running) with fake modules, as the extension would hand it to the saver (its integration time is
+    saved only if asked: it has its own tests; `units` is the intensity unit, `per_integration` the division of the
+    values by the integration time)"""
     detector = FakeDetector(f'Spectro{number}')
     thermo = FakeThermostat(f'Thermo{number}') if thermostat else None
     settings = UnitSettings(Parameter.create(**unit_definition(number, rois if rois is not None else
@@ -39,12 +42,16 @@ def make_unit(number=1, rois=None, run_ramp=True, thermostat=True):
     settings.set_modules([detector.title], [thermo.title] if thermo else [], detector.title,
                          thermo.title if thermo else None)
     settings.child('ramp', 'run').setValue(run_ramp)
+    settings.child('record', 'integration_time').setValue(integration)
+    if units is not None:
+        settings.child('intensity_units').setValue(units)
+    settings.child('per_integration').setValue(per_integration)
     unit = Unit(settings, FakeManager(*[m for m in (detector, thermo) if m is not None]))
     unit.attach()
     return unit
 
 
-def make_measurement(unit, index, t0=1000., phase=Phase.RAMP):
+def make_measurement(unit, index, t0=1000., phase=Phase.RAMP, integration=math.nan):
     y = X - 400. + index
     axis = Axis(label='wavelength', units='nm', data=X, index=0)
     dwa = DataRaw('spectrum', data=[y], axes=[axis], labels=['intensity'])
@@ -52,16 +59,17 @@ def make_measurement(unit, index, t0=1000., phase=Phase.RAMP):
     rois = unit.settings.rois
     return Measurement(unit.number, index, t0 + index, spectrum, rois, [100. * index + k for k in range(len(rois))],
                        20. + index, 21. + index if phase is not None else math.nan, phase,
-                       1 if phase is not None else 0)
+                       1 if phase is not None else 0, integration_time=integration)
 
 
 class TestRecording:
     def test_everything_is_recorded_by_default(self, qapp):
-        unit = make_unit()
+        unit = make_unit(integration=True)
 
         recording = UnitRecording.from_unit(unit)
 
-        assert recording.titles == ['Unit1_Spectrum', 'Unit1_ROIs', 'Unit1_Temperature', 'Unit1_Program']
+        assert recording.titles == ['Unit1_Spectrum', 'Unit1_ROIs', 'Unit1_Integration', 'Unit1_Temperature',
+                                   'Unit1_Program']
         assert [roi.name for roi in recording.rois] == [f'ROI {i}' for i in range(1, 7)]
         assert recording.roi_indices == [0, 1, 2, 3, 4, 5]
         assert recording.is_saved and recording.program

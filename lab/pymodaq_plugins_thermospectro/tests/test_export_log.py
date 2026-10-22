@@ -41,42 +41,39 @@ def write_log(h5saver, n=9, spectrum_every=3, image_every=4, channels=1, hold=Tr
 
 
 class TestSpectrumNowAndThen:
-    def test_one_row_per_readout_and_a_spectrum_where_there_is_one(self, h5saver, qapp, tmp_path):
+    def test_one_row_per_readout_for_the_values(self, h5saver, qapp, tmp_path):
         path = write_log(h5saver)
 
         out = run_export(path, tmp_path)
 
         header, rows = read_csv(out / f'{path.stem}_spectrometer1.csv')
-        assert header[:3] == ['time (s)', 'temperature (°C)', 'A (500-510 nm)'] and header[-1] == 'full spectrum'
+        assert header == ['time (s)', 'temperature (°C)', 'A (500-510 nm) [counts]']
         assert len(rows) == 9
         assert [row[2] for row in rows] == pytest.approx([100. * i for i in range(9)])  # (the ROIs: every readout)
-        spectra = [row[-1] for row in rows]
-        assert [text != '' for text in spectra] == [True, False, False, True, False, False, True, False, False]
-        assert np.array(spectra[3].split(), dtype=float)[0] == pytest.approx(3.)  # (the one of the readout 3)
-        assert np.array(spectra[6].split(), dtype=float)[0] == pytest.approx(6.)
 
-    def test_the_columns_of_the_wavelengths_have_empty_cells_too(self, h5saver, qapp, tmp_path):
+    def test_one_row_per_spectrum_which_was_saved(self, h5saver, qapp, tmp_path):
         path = write_log(h5saver)
 
-        out = run_export(path, tmp_path, '--spectrum', 'columns')
+        out = run_export(path, tmp_path)
 
-        header, rows = read_csv(out / f'{path.stem}_spectrometer1.csv')
-        assert len(rows) == 9 and header[3] == '400.000 nm'
-        assert [row[3] != '' for row in rows] == [True, False, False, True, False, False, True, False, False]
-        assert rows[3][3] == pytest.approx(3.) and rows[6][-1] == pytest.approx(506.)
+        header, rows = read_csv(out / f'{path.stem}_spectrometer1_spectra.csv')
+        assert len(rows) == 3 and header[:3] == ['time (s)', 'temperature (°C)', '400.000 nm']  # (the readouts 0, 3, 6)
+        assert [row[0] for row in rows] == pytest.approx([0., 3., 6.])
+        assert [row[1] for row in rows] == pytest.approx([20., 23., 26.])  # (the temperature of those readouts)
+        assert [row[2] for row in rows] == pytest.approx([0., 3., 6.])  # (the first pixel: x - 400 + readout)
+        assert rows[2][-1] == pytest.approx(506.)
 
-    def test_a_spectrum_at_each_readout_leaves_no_gap(self, h5saver, qapp, tmp_path):
+    def test_a_spectrum_at_each_readout_gives_a_row_for_each(self, h5saver, qapp, tmp_path):
         path = write_log(h5saver, spectrum_every=1)
 
         out = run_export(path, tmp_path)
 
-        _, rows = read_csv(out / f'{path.stem}_spectrometer1.csv')
-        assert all(row[-1] != '' for row in rows)
+        assert len(read_csv(out / f'{path.stem}_spectrometer1_spectra.csv')[1]) == 9
 
     def test_the_held_temperature_is_a_column_of_the_program(self, h5saver, qapp, tmp_path):
         path = write_log(h5saver)
 
-        out = run_export(path, tmp_path, '--program', '--spectrum', 'none')
+        out = run_export(path, tmp_path, '--program', '--no-spectra')
 
         header, rows = read_csv(out / f'{path.stem}_spectrometer1.csv')
         assert header[-3:] == ['set-point', 'cycle', 'phase code']
@@ -100,34 +97,26 @@ class TestImagesNowAndThen:
         for page, readout in enumerate((0, 4, 8)):
             assert np.array_equal(images[page], 10 * rows + columns + readout)
 
-    def test_the_csv_of_the_camera_has_a_row_per_image(self, h5saver, qapp, tmp_path):
+    def test_the_csv_of_the_camera_has_a_row_per_readout_and_says_where_the_images_are(self, h5saver, qapp, tmp_path):
         path = write_log(h5saver)
 
         out = run_export(path, tmp_path)
 
         header, rows = read_csv(out / f'{path.stem}_camera.csv')
-        assert len(rows) == 3
-        assert [row[1] for row in rows] == pytest.approx([30., 34., 38.])  # (the temperature of the camera)
-
-    def test_the_log_of_every_readout_says_where_the_images_are(self, h5saver, qapp, tmp_path):
-        path = write_log(h5saver)
-
-        out = run_export(path, tmp_path)
-
-        header, rows = read_csv(out / f'{path.stem}_camera_log.csv')
-        assert header[-1] == 'image' and header[0] == 'time (s)' and len(rows) == 9
+        assert header[0] == 'time (s)' and header[-1] == 'tif frame' and len(rows) == 9
         assert [row[1] for row in rows] == pytest.approx([30. + i for i in range(9)])  # (every readout)
-        assert [row[-1] for row in rows] == [1., '', '', '', 2., '', '', '', 3.]  # (the row of the csv, the frame in ImageJ)
-        assert header[-2].startswith('camera Spot')  # (no file column: one tif holds them all)
+        assert [row[-1] for row in rows] == [1., '', '', '', 2., '', '', '', 3.]  # (the frame in ImageJ, from 1)
+        assert 'tif file' not in header  # (one tif holds them all)
+        assert not (out / f'{path.stem}_camera_log.csv').exists()  # (the readouts are the rows of the csv)
 
-    def test_without_sparse_images_there_is_no_separate_log(self, h5saver, qapp, tmp_path):
+    def test_with_an_image_at_each_readout_every_row_has_its_frame(self, h5saver, qapp, tmp_path):
         path = write_log(h5saver, image_every=1)
 
         out = run_export(path, tmp_path)
 
-        assert not (out / f'{path.stem}_camera_log.csv').exists() and (out / f'{path.stem}_camera.csv').exists()
+        assert [row[-1] for row in read_csv(out / f'{path.stem}_camera.csv')[1]] == [float(i) for i in range(1, 10)]
 
-    def test_the_rows_of_the_csv_of_the_camera_are_the_pages_of_the_tif(self, h5saver, qapp, tmp_path, tifffile):
+    def test_the_frames_of_the_csv_are_the_pages_of_the_tif(self, h5saver, qapp, tmp_path, tifffile):
         path = write_log(h5saver)
 
         out = run_export(path, tmp_path)
@@ -135,7 +124,7 @@ class TestImagesNowAndThen:
         with tifffile.TiffFile(out / f'{path.stem}_camera.tif') as tif:
             labels = tif.imagej_metadata['Labels']
         _, rows = read_csv(out / f'{path.stem}_camera.csv')
-        assert len(labels) == len(rows) == 3
+        assert len(labels) == len([row for row in rows if row[-1] != '']) == 3
 
 
 class TestTheTifOfAnImageJLimit:
@@ -176,17 +165,17 @@ class TestTheTifOfAnImageJLimit:
             (f'{path.stem}_camera_part02.tif', 1.), (f'{path.stem}_camera_part02.tif', 2.),
             (f'{path.stem}_camera_part03.tif', 1.)]
 
-    def test_the_log_of_the_readouts_too(self, h5saver, qapp, tmp_path):
+    def test_the_readouts_without_an_image_have_no_file_and_no_frame(self, h5saver, qapp, tmp_path):
         path = write_log(h5saver, image_every=4)  # (3 images: two files)
 
         out = run_export(path, tmp_path)
 
-        header, rows = read_csv(out / f'{path.stem}_camera_log.csv')
-        assert header[-3:] == ['image', 'tif file', 'tif frame']
-        assert [row[-3:] for row in rows] == [
-            [1., f'{path.stem}_camera_part01.tif', 1.], ['', '', ''], ['', '', ''], ['', '', ''],
-            [2., f'{path.stem}_camera_part01.tif', 2.], ['', '', ''], ['', '', ''], ['', '', ''],
-            [3., f'{path.stem}_camera_part02.tif', 1.]]
+        header, rows = read_csv(out / f'{path.stem}_camera.csv')
+        assert header[-2:] == ['tif file', 'tif frame'] and len(rows) == 9
+        assert [row[-2:] for row in rows] == [
+            [f'{path.stem}_camera_part01.tif', 1.], ['', ''], ['', ''], ['', ''],
+            [f'{path.stem}_camera_part01.tif', 2.], ['', ''], ['', ''], ['', ''],
+            [f'{path.stem}_camera_part02.tif', 1.]]
 
     def test_a_small_series_is_one_file(self, h5saver, qapp, tmp_path, monkeypatch):
         monkeypatch.setattr(export, 'TIF_PART_BYTES', 10 ** 9)
@@ -272,23 +261,21 @@ class TestLongLogs:
         assert export.imagej_dtype([images]) == np.uint16
 
     def test_the_spectra_are_read_a_block_of_rows_at_a_time(self, h5saver, qapp, tmp_path, monkeypatch):
-        path = write_log(h5saver, spectrum_every=2)
+        path = write_log(h5saver, spectrum_every=1)
         whole = run_export(path, tmp_path / 'whole')
 
-        monkeypatch.setattr(export.SpectrumReader, 'BLOCK', 2)
-        reads = []
-        read = export.SpectrumReader.spectrum
+        monkeypatch.setattr(export.SpectraRows, 'BLOCK', 2)
+        sizes = []
+        blocks_of = export.SpectraRows.blocks
 
-        def spectrum(self, row):
-            result = read(self, row)
-            reads.append(self._stop - self._start)
-            return result
+        def blocks(self):
+            for start, block in blocks_of(self):
+                sizes.append(len(block))
+                yield start, block
 
-        monkeypatch.setattr(export.SpectrumReader, 'spectrum', spectrum)
-        blocks = run_export(path, tmp_path / 'blocks')
-        by_columns = run_export(path, tmp_path / 'columns', '--spectrum', 'columns')
+        monkeypatch.setattr(export.SpectraRows, 'blocks', blocks)
+        by_blocks = run_export(path, tmp_path / 'blocks')
 
-        assert (whole / f'{path.stem}_spectrometer1.csv').read_bytes() == (blocks / f'{path.stem}_spectrometer1.csv').read_bytes()
-        assert max(reads) <= 2
-        header, rows = read_csv(by_columns / f'{path.stem}_spectrometer1.csv')
-        assert [row[3] != '' for row in rows] == [index % 2 == 0 for index in range(9)]
+        assert (whole / f'{path.stem}_spectrometer1_spectra.csv').read_bytes() == (
+            by_blocks / f'{path.stem}_spectrometer1_spectra.csv').read_bytes()
+        assert sizes == [2, 2, 2, 2, 1] and len(read_csv(by_blocks / f'{path.stem}_spectrometer1_spectra.csv')[1]) == 9

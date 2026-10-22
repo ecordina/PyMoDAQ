@@ -42,6 +42,9 @@ RAMP_FIELDS = ('mode', 'initial', 'take_current', 'final', 'velocity', 'duration
 #: The default times of a spectrometer
 DEFAULT_INTEGRATION_TIME = 500.0  # ms
 DEFAULT_READOUT_TIME = 1.0  # s
+#: What an instrument measures, until the user says otherwise (an ADC gives counts), and the unit of the integration time
+DEFAULT_INTENSITY_UNITS = 'counts'
+INTEGRATION_UNITS = 'ms'
 
 
 def roi_definition(key: str, roi: Roi, units: str = 'nm') -> dict:
@@ -68,10 +71,15 @@ def rect_roi_definition(key: str, roi: RectRoi, units: str = camera.UNITS) -> di
         {'title': 'From y:', 'name': 'y0', 'type': 'float', 'value': float(roi.y0), 'suffix': units,
          'tip': 'Top edge of the window (the first row is 0)'},
         {'title': 'To y:', 'name': 'y1', 'type': 'float', 'value': float(roi.y1), 'suffix': units},
+        {'title': 'Value:', 'name': 'aggregation', 'type': 'list', 'limits': list(camera.MODES),
+         'value': roi.aggregation,
+         'tip': 'What this ROI gives at each measurement: one number made of its pixels (mean, sum, median, min, max '
+                'or std: the standard deviation), plotted and saved in the csv file with the others, or "crop": its '
+                'pixels themselves, saved as images (a tif file of their own), with nothing to plot'},
         {'title': 'Record:', 'name': 'record', 'type': 'bool', 'value': bool(roi.record),
-         'tip': 'Save the value of this ROI (the mean of its pixels) at each measurement'},
+         'tip': 'Save this ROI at each measurement: its value, or its pixels if it is a crop'},
         {'title': 'Plot:', 'name': 'plot', 'type': 'bool', 'value': bool(roi.plot),
-         'tip': 'Show this ROI in the plot (what is recorded does not change)'},
+         'tip': 'Show the value of this ROI in the plot (what is recorded does not change). A crop has no value'},
     ]}
 
 
@@ -145,6 +153,16 @@ def _unit_definition(number: int, rois: Sequence[Roi], enabled: bool, kind: str,
          'tip': f'The {what} is read out, and a measurement recorded, once per readout time. '
                 f'It must be longer than the {"exposure" if cam else "integration"} time (as many times as the '
                 f'module of the {what} averages: its Naverage)'},
+        {'title': 'Intensity unit:', 'name': 'intensity_units', 'type': 'str', 'value': DEFAULT_INTENSITY_UNITS,
+         'tip': f'The unit of what the {what} measures (the instrument does not say): it is shown in the plots and '
+                'saved with the data. The values of the ROIs divided by the integration time are in this unit per ms'},
+        {'title': 'Per ms of integration:' if not cam else 'Per ms of exposure:', 'name': 'per_integration',
+         'type': 'bool', 'value': False,
+         'tip': f'Divide the value of each ROI (spectrometer ROIs, aggregated ROIs of a camera) by the '
+                f'{"exposure" if cam else "integration"} time, in ms, of its readout: the values (curves and file) are '
+                f'then per millisecond, and do not jump when the time is changed during an experiment. The time is '
+                'saved too, and the full spectra, images and crops are saved as they come. Not while an experiment '
+                'runs'},
         {'title': 'Record to disk:', 'name': 'record', 'type': 'group', 'children': [
             {'title': 'The full image:', 'name': 'image', 'type': 'bool', 'value': False,
              'tip': 'Save the whole image (a lot of data: a camera gives megabytes), every "Full image every" seconds'}
@@ -163,7 +181,14 @@ def _unit_definition(number: int, rois: Sequence[Roi], enabled: bool, kind: str,
             {'title': 'The temperature:', 'name': 'temperature', 'type': 'bool', 'value': True,
              'tip': 'Save the measured temperature (and the set-point, the cycle and the phase of the ramp) '
                     'at each measurement'},
-        ]},
+            {'title': 'The exposure time:' if cam else 'The integration time:', 'name': 'integration_time',
+             'type': 'bool', 'value': True,
+             'tip': 'Save the time the instrument integrated for each measurement (in ms): it can be changed while '
+                    'an experiment runs'},
+        ] + ([{'title': 'Crops every:', 'name': 'crop_interval', 'type': 'float', 'value': 0.0, 'min': 0.0,
+               'suffix': 's', 'tip': 'The pixels of the ROIs which are a crop (see "Value" of a ROI) are saved this '
+                                     'often (0: at each measurement). A crop is as large as its rectangle: a long '
+                                     'log of a large one needs this large'}] if cam else [])},
         {'title': 'Plot the temperature:', 'name': 'plot_temperature', 'type': 'bool', 'value': True,
          'tip': 'Show the temperature on the plot of the ROIs, on its own scale (at the right)'},
         {'title': 'ROIs:', 'name': 'rois', 'type': 'group', 'expanded': False,
@@ -311,6 +336,38 @@ class UnitSettings:
         return bool(self.param['record', 'temperature'])
 
     @property
+    def record_integration(self) -> bool:
+        """The integration (exposure) time of each measurement is saved"""
+        try:
+            return bool(self.param['record', 'integration_time'])
+        except KeyError:  # (settings loaded from a file made before it existed)
+            return True
+
+    @property
+    def intensity_units(self) -> str:
+        """What the detector measures (counts, unless the user says otherwise)"""
+        try:
+            return str(self.param['intensity_units']).strip()
+        except KeyError:
+            return DEFAULT_INTENSITY_UNITS
+
+    @property
+    def per_integration(self) -> bool:
+        """The values of the ROIs are divided by the integration time of their readout"""
+        try:
+            return bool(self.param['per_integration'])
+        except KeyError:
+            return False
+
+    @property
+    def value_units(self) -> str:
+        """The units of the values of the ROIs: the intensity unit, per ms of integration if they are divided by it"""
+        units = self.intensity_units
+        if not self.per_integration:
+            return units
+        return f'{units}/{INTEGRATION_UNITS}' if units else f'1/{INTEGRATION_UNITS}'
+
+    @property
     def plot_temperature(self) -> bool:
         return bool(self.param['plot_temperature'])
 
@@ -347,6 +404,12 @@ class UnitSettings:
     def full_interval(self) -> float:
         """s, how often the whole spectrum (image) is saved: 0 for each measurement"""
         return max(0.0, float(self.param['record', 'image_interval' if self.KIND == CAMERA else 'spectrum_interval']))
+
+    @property
+    def crop_interval(self) -> float:
+        """s, how often the pixels of the ROIs which are a crop are saved: 0 for each measurement (a spectrometer has
+        no crop)"""
+        return 0.0
 
     def set_modules(self, spectrometers: Sequence[str], thermostats: Sequence[str],
                     spectrometer: Optional[str] = None, thermostat: Optional[str] = None):
@@ -610,9 +673,9 @@ class UnitSettings:
         -------
         (kind, key) or None
             None if the parameter is not one of this unit, or the program is changing it itself. The kinds are
-            ``enabled``, ``modules``, ``integration``, ``readout``, ``record``, ``plot_temperature``, ``ramp`` (key: the
-            name of the field) and, for the ROIs (key: the name of the ROI) ``roi_edges``, ``roi_name``, ``roi_record``,
-            ``roi_plot``
+            ``enabled``, ``modules``, ``integration``, ``readout``, ``units`` (key: the intensity unit or the division by
+            the integration time), ``record``, ``plot_temperature``, ``ramp`` (key: the name of the field) and, for the ROIs (key: the name of the ROI) ``roi_edges``, ``roi_name``, ``roi_record``,
+            ``roi_plot``, ``roi_aggregation``
         """
         if self.is_busy:
             return None
@@ -624,7 +687,7 @@ class UnitSettings:
             return None
         if path[0] == 'rois' and len(path) == 3 and ROI_NAME.match(path[1]):
             kind = {**{edge: 'roi_edges' for edge in self.EDGES}, 'name': 'roi_name', 'record': 'roi_record',
-                    'plot': 'roi_plot'}.get(path[2])
+                    'plot': 'roi_plot', 'aggregation': 'roi_aggregation'}.get(path[2])
             return (kind, path[1]) if kind else None
         head = path[0]
         if head in ('enabled', 'plot_temperature'):
@@ -633,6 +696,8 @@ class UnitSettings:
             return 'modules', head
         if head == 'integration_time':
             return 'integration', None
+        if head in ('intensity_units', 'per_integration'):
+            return 'units', head
         if head == 'readout_time':
             return 'readout', None
         if head == 'record':
@@ -647,7 +712,8 @@ class UnitSettings:
     def lock(self, locked: bool):
         """Forbid what would change an experiment which is running
 
-        A group does not disable its children in the tree: every leaf is disabled. The plot buttons stay usable.
+        A group does not disable its children in the tree: every leaf is disabled. The plot buttons and the
+        integration time stay usable.
         """
         with self.busy():
             for leaf in leaves(self.param):
@@ -656,6 +722,8 @@ class UnitSettings:
                     continue
                 if path == ('plot_temperature',) or (len(path) == 3 and path[0] == 'rois' and path[2] == 'plot'):
                     continue  # what is plotted can be changed during the experiment
+                if path == ('integration_time',):
+                    continue  # so can the integration time: it is saved with each measurement
                 leaf.setOpts(enabled=not locked)
             for key in self.roi_keys:
                 self.param.child('rois', key).setOpts(removable=not locked)
@@ -680,7 +748,17 @@ class CameraSettings(UnitSettings):
         group = self.param.child('rois', key)
         x0, x1 = sorted((float(group['x0']), float(group['x1'])))
         y0, y1 = sorted((float(group['y0']), float(group['y1'])))
-        return RectRoi(str(group['name']), x0, x1, y0, y1, bool(group['record']), bool(group['plot']))
+        aggregation = str(group['aggregation']) if 'aggregation' in group.names else camera.DEFAULT_AGGREGATION
+        return RectRoi(str(group['name']), x0, x1, y0, y1, bool(group['record']), bool(group['plot']),
+                       aggregation if aggregation in camera.MODES else camera.DEFAULT_AGGREGATION)
+
+    @property
+    def crop_interval(self) -> float:
+        """s, how often the pixels of the ROIs which are a crop are saved: 0 for each measurement"""
+        try:
+            return max(0.0, float(self.param['record', 'crop_interval']))
+        except KeyError:  # (settings loaded from a file made before it existed)
+            return 0.0
 
     def roi_definition(self, key: str, roi) -> dict:
         return rect_roi_definition(key, roi, self.axis_units)

@@ -93,6 +93,12 @@ class Measurement:
         The cycle of the ramp (0 if there is no ramp running)
     full_due: bool
         The whole spectrum (image) is to be saved with this measurement (it is saved only every so often in a long log)
+    crop_due: bool
+        The pixels of the ROIs of a camera which are a crop are to be saved with this measurement (they may be saved
+        only every so often too)
+    integration_time: float
+        The integration (exposure) time the instrument was set to when this measurement was started, in ms: it can be
+        changed during an experiment (nan if it is not known)
     """
     unit: int
     index: int
@@ -105,6 +111,8 @@ class Measurement:
     phase: Optional[Phase] = None
     cycle: int = 0
     full_due: bool = True
+    crop_due: bool = True
+    integration_time: float = math.nan
 
 
 class Unit(QtCore.QObject):
@@ -167,6 +175,9 @@ class Unit(QtCore.QObject):
         self.after_program: Optional[str] = None
         self.settled = False  # the ramps are over, the log goes on with the controller held where they ended
         self._last_full = -math.inf  # when the whole spectrum (image) was last saved (time.monotonic())
+        self._last_crop = -math.inf  # when the crops of the ROIs of a camera were last saved
+        self._requested_integration: Optional[float] = None  # the integration time last asked of the detector (ms)
+        self._applied_integration: Optional[float] = None  # the one it was set to (it accepts the closest it can)
         self.last_sent: Optional[float] = None
         self.failed = False  # the spectrometer is not read out any more
         self.clock = time.perf_counter  # the clock of the ramp (replaced in the tests)
@@ -332,6 +343,8 @@ class Unit(QtCore.QObject):
             return
         wanted = self.settings.integration_time
         applied = set_integration_time(self.detector, wanted)
+        self._requested_integration = wanted
+        self._applied_integration = wanted if applied is None else applied  # (no such setting: the nominal one)
         if applied is None:
             logger.info(f'{self.detector.title} has no integration time setting, it is left as it is')
         elif abs(applied - wanted) > 1e-9:
@@ -339,6 +352,39 @@ class Unit(QtCore.QObject):
                            f'the closest to {wanted:g} ms it accepts')
         else:
             logger.info(f'The integration time of {self.detector.title} is {applied:g} ms')
+
+    def integration_time_now(self) -> float:
+        """The integration time the instrument is set to (ms): what each measurement is made with, and what is saved"""
+        return self._applied_integration if self._applied_integration is not None else self.settings.integration_time
+
+    def integration_changed(self):
+        """The integration time was changed in the settings
+
+        In the live view it is set on the instrument at once. During an experiment it is set before the next readout
+        (:meth:`_sync_integration`), so that the time saved with a measurement is the one it was made with.
+        """
+        if self.state == UnitState.LIVE:
+            self.apply_integration_time()
+
+    def _sync_integration(self):
+        """Before a readout: set on the instrument the integration time the settings ask for, if it changed
+
+        One which is not shorter than the readout time (as many times as the module averages) cannot be followed: it
+        is refused, told, and the setting goes back to what the instrument is set to.
+        """
+        wanted = self.settings.integration_time
+        if self._requested_integration is not None and abs(wanted - self._requested_integration) <= 1e-9:
+            return
+        if self.state == UnitState.RUNNING and self._requested_integration is not None \
+                and wanted / 1000. * self.n_averages() >= self.settings.readout_time:
+            kept = self._requested_integration
+            averages = f' x {self.n_averages()} averages' if self.n_averages() > 1 else ''
+            self.notice.emit(f'{self.label}: {wanted:g} ms is not shorter than the readout time '
+                             f'({self.settings.readout_time:g} s{averages}): the {self.TIME_NAME} time stays {kept:g} ms')
+            with self.settings.busy():
+                self.settings.child('integration_time').setValue(kept)
+            return
+        self.apply_integration_time()
 
     # ----------------------------------------------------------------------------------------------------------
     # plots
@@ -452,7 +498,8 @@ class Unit(QtCore.QObject):
             logger.warning(f'{self.detector.title}: no {self.DATA} came back from the readout started {age:.1f} s ago, '
                            'reading out again')
             self._pending = None
-        self._pending = (time.time(), time.monotonic())
+        self._sync_integration()
+        self._pending = (time.time(), time.monotonic(), self.integration_time_now())
         if self.thermostat is not None and self.thermostat.initialized_state:
             self.thermostat.get_actuator_value()
         self.detector.snap()
@@ -468,7 +515,7 @@ class Unit(QtCore.QObject):
             return  # a spectrum nobody asked for (the module was grabbing on its own): shown, not measured
         if self.state == UnitState.RUNNING and pending[1] < self._run_started:
             return  # asked for before the experiment began: shown, but it is not part of it
-        self._measure(pending[0])
+        self._measure(pending[0], pending[2] if len(pending) > 2 else None)
 
     def _store_data(self, dte: DataToExport) -> bool:
         """Keep what the detector delivered (False if there is nothing usable in it)"""
@@ -530,10 +577,27 @@ class Unit(QtCore.QObject):
             return math.nan
         return reading.value
 
-    def _measure(self, started: float):
+    def _per_integration(self, values: list[float], integration: float) -> list[float]:
+        """The values divided by the integration time, in ms (nan if it is not a time)"""
+        if not (math.isfinite(integration) and integration > 0):
+            if 'integration' not in self._warnings:  # once, not at every readout
+                self._warnings.add('integration')
+                logger.warning(f'{self.label}: the values cannot be divided by an integration time of {integration:g} ms')
+            return [math.nan] * len(values)
+        return [value / integration for value in values]
+
+    @property
+    def value_units(self) -> str:
+        """The units of the values of the ROIs (see :attr:`UnitSettings.value_units`)"""
+        return self.settings.value_units
+
+    def _measure(self, started: float, integration: Optional[float] = None):
         started_monotonic = time.monotonic()
+        integration = self.integration_time_now() if integration is None else integration
         rois = self.settings.rois
         values = self._roi_values(rois)
+        if self.settings.per_integration:
+            values = self._per_integration(values, integration)
         temperature = self.current_temperature()
         state = self.ramp_state if self.state == UnitState.RUNNING else None
         setpoint, phase, cycle = (state.setpoint, state.phase, state.cycle) if state is not None \
@@ -546,8 +610,12 @@ class Unit(QtCore.QObject):
         full_due = interval <= 0 or started_monotonic - self._last_full >= interval - 1e-6
         if full_due:
             self._last_full = started_monotonic
+        interval = self.settings.crop_interval
+        crop_due = interval <= 0 or started_monotonic - self._last_crop >= interval - 1e-6
+        if crop_due:
+            self._last_crop = started_monotonic
         measurement = Measurement(self.number, self.n_measurements, started, self.spectrum, rois, values, temperature,
-                                  setpoint, phase, cycle, full_due)
+                                  setpoint, phase, cycle, full_due, crop_due, integration)
         self.n_measurements += 1
         if len(values) == self.series_rois.n_columns:
             self.series_rois.append(started - self.origin, values)
@@ -617,6 +685,7 @@ class Unit(QtCore.QObject):
         # not part of the experiment, see _on_spectrum)
         self._started_at = self._run_started = time.monotonic()
         self._last_full = -math.inf  # (the first measurement has the whole spectrum)
+        self._last_crop = -math.inf  # (and the crops)
         self.hold_target = None
         self.settled = False
         self.after_program = None
@@ -851,7 +920,8 @@ class Unit(QtCore.QObject):
 class CameraUnit(Unit):
     """A camera and its thermostat: the unit of a spectrometer, with images instead of spectra
 
-    Each readout takes one image; the value of each ROI is the mean of the pixels inside its rectangle. The ramp, the
+    Each readout takes one image; the value of each ROI is an aggregation (the mean, by default) of the pixels inside its
+    rectangle, or, if it is a crop, it has none: its pixels are saved (see :mod:`.camera`). The ramp, the
     thermostat, the watchdogs and the recording work as in :class:`Unit`: the last image is :attr:`spectrum` (a
     :class:`~.camera.Frame`), what the two kinds of unit have in common keeps the same names.
     """
@@ -881,6 +951,9 @@ class CameraUnit(Unit):
         image = self.spectrum.y
         for roi in rois:
             value = roi.value(image)
+            if roi.is_crop:  # (no value: its pixels are saved)
+                values.append(value)
+                continue
             if math.isnan(value) and roi.name not in self._warnings:  # once per ROI, not at every readout
                 self._warnings.add(roi.name)
                 logger.warning(f'{roi.name}: the window is outside of the image ({image.shape[1]} x '

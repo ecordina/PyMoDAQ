@@ -60,7 +60,7 @@ FINAL_HINT = ('\nDone. Start PyMoDAQ again. The command of each application look
               f'  {" | ".join(APPLICATIONS)}      (lab_apps: their names and what each one is for)\n'
               '  thermo_camera_spectro --mock               (no hardware)\n'
               '  qnw_tc_check COM3 --trace                  (the thermostat)\n'
-              '  python lab/pymodaq_plugins_thermospectro/tools/thermospectro_export.py FILE.h5   (csv and tif)')
+              '  lab_export FILE.h5                         (the h5 file of an experiment as csv, tif and text files)')
 
 
 def installed(module: str) -> bool:
@@ -144,7 +144,7 @@ def parse(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
                                 'the Thorlabs camera packages and the USB packages), then the three plugins')
     arguments.add_argument('--camera', action='store_true',
                            help='also install pymodaq_plugins_thorlabs (the Thorlabs cameras) and tifffile (the tif '
-                                'files of thermospectro_export.py)')
+                                'files of lab_export)')
     arguments.add_argument('--usb', action='store_true',
                            help='also install libusb-package and pyusb (the pyseabreeze spectrometers on Windows)')
     arguments.add_argument('--no-pymodaq', action='store_true',

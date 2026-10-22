@@ -373,6 +373,10 @@ class CurvesPlot(pg.PlotWidget):
         curve.setDownsampling(auto=True, method='peak')
         return curve
 
+    def set_value_label(self, text: str, units: str = ''):
+        """What the axis at the left says the curves are, and their units"""
+        self.getPlotItem().setLabel('left', text, units=units)
+
     def set_curves(self, curves: Sequence[tuple[str, str, bool]]):
         """Replace the curves of the main scale (at the left)
 

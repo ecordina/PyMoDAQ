@@ -13,7 +13,6 @@ from __future__ import annotations
 import argparse
 import shutil
 import textwrap
-from pathlib import Path
 from typing import Optional, Sequence
 
 from pymodaq_plugins_thermospectro.configurations import CONFIGURATIONS, Configuration
@@ -21,6 +20,9 @@ from pymodaq_plugins_thermospectro.configurations import CONFIGURATIONS, Configu
 #: The commands of the lab which are not applications: (what to type, what it does)
 OTHER_COMMANDS = (
     ('lab_apps', 'this list'),
+    ('lab_export FILE.h5', 'the h5 file of an experiment as csv files (the values, the full spectra), tif files (the images '
+                           'and crops, T, C, Y, X) and a text (protocol, observations, units): --list says what the file '
+                           'holds, --help the options'),
     ('qnw_tc_check COM3 --trace', 'first contact with a Quantum Northwest controller (nothing is set on it)'),
 )
 
@@ -39,12 +41,6 @@ def instruments(configuration: Configuration) -> str:
     if configuration.thermostats:
         parts.append(plural(configuration.thermostats, 'thermal controller'))
     return ' + '.join(parts)
-
-
-def export_command() -> str:
-    """How to start the converter of the h5 files (a script of the folder ``tools`` of the plugin, when it is there)"""
-    script = Path(__file__).resolve().parents[2] / 'tools' / 'thermospectro_export.py'
-    return f'python {script if script.exists() else "tools/thermospectro_export.py"} FILE.h5'
 
 
 def describe(width: Optional[int] = None) -> str:
@@ -69,7 +65,6 @@ def describe(width: Optional[int] = None) -> str:
     first = max(len(command) for command, _ in OTHER_COMMANDS)
     lines += [textwrap.fill(f'{command.ljust(first)}   {what}', width=width, initial_indent='  ',
                             subsequent_indent=' ' * (first + 5)) for command, what in OTHER_COMMANDS]
-    lines += ['  csv and tif files from the h5 file of a log:', f'    {export_command()}']
     return '\n'.join(lines)
 
 

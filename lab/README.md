@@ -7,7 +7,7 @@ PyMoDAQ files it changes are the two root README files (a note at the top).
 
 | folder | what it is |
 |---|---|
-| `pymodaq_plugins_thermospectro` | the five **applications** (`thermo_2spectro`, `thermo_spectro`, `camera`, `thermo_camera`, `thermo_camera_spectro`): spectrometers and a camera recorded while a thermal controller holds a temperature or runs a ramp, for any length of time; they look for the instruments by themselves; `tools/thermospectro_export.py` makes csv and tif files from the h5 files |
+| `pymodaq_plugins_thermospectro` | the five **applications** (`thermo_2spectro`, `thermo_spectro`, `camera`, `thermo_camera`, `thermo_camera_spectro`): spectrometers and a camera recorded while a thermal controller holds a temperature or runs a ramp, for any length of time; they look for the instruments by themselves; **`lab_export FILE.h5`** makes csv files, tif files (T, C, Y, X) and a text (protocol, observations, units) from the h5 files |
 | `pymodaq_plugins_quantumnorthwest` | the actuator **QNW_TC** for the Quantum Northwest TC 125 / TC 1 / TC 1B temperature controllers, with a simulator and `qnw_tc_check` (first contact) |
 | `pymodaq_plugins_oceaninsight` | the **Seabreeze** spectrometers (Ocean Insight / Ocean Optics): pyseabreeze by default, several spectrometers at once, dark pixels removed, nm axis |
 | `environments/` | the Python packages of the two computers, and how they differ |
@@ -37,7 +37,7 @@ thermo_camera_spectro --mock
 ```
 
 (The commands are in the `Scripts` folder of the environment; `lab_apps` lists the five applications, `thermo_2spectro`, `thermo_spectro`,
-`camera`, `thermo_camera` and `thermo_camera_spectro`, with what each one is for.) Without `--mock` the same command looks at what is connected:
+`camera`, `thermo_camera` and `thermo_camera_spectro`, with what each one is for; `lab_export FILE.h5` converts the h5 file of an experiment.) Without `--mock` the same command looks at what is connected:
 it connects what it recognizes and tells what it does not (select the port of a thermal controller, `COM6` for instance, in the
 settings of its module in the Dashboard, click *Ini*), then you press *Start* in the window of the application: it logs
 everything until *Stop*, or for the duration you set (48 h...). Each thermal controller holds a temperature, or runs a cycle
@@ -64,9 +64,12 @@ the five packages of `packages/` (editable, as `5.3.8+lab`, no git tag needed) i
 ```powershell
 cd PyMoDAQ
 git pull
-python lab/install_lab.py --all               # only needed when a dependency changed (--no-pymodaq if the computer keeps
-                                              # the PyMoDAQ it has, plus --camera --usb if it uses them)
+python lab/install_lab.py --all               # only needed when a dependency changed, or a new command came (--no-pymodaq if
+                                              # the computer keeps the PyMoDAQ it has, plus --camera --usb if it uses them)
 ```
+
+(A **new command**, like `lab_export`, is created by the installation: after a `git pull` which brings one, run `install_lab.py`
+once, or `python -m pip install -e lab/pymodaq_plugins_thermospectro`.)
 
 then start PyMoDAQ again. Do not use the *Update* button of the Plugin Manager of PyMoDAQ for the lab plugins (it would
 replace the one of this repository by the release of PyPI). Nothing else is to be done on the computers: **do not edit the installed files in

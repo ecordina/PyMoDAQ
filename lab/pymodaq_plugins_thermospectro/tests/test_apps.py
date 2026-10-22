@@ -41,21 +41,22 @@ class TestTheList:
 
         told = capsys.readouterr().out
         flat = ' '.join(told.split())  # (the paragraphs are wrapped to the width of the terminal)
-        assert 'lab_apps' in told and 'qnw_tc_check COM3 --trace' in told and 'thermospectro_export.py FILE.h5' in told
+        assert 'lab_apps' in told and 'qnw_tc_check COM3 --trace' in told and 'lab_export FILE.h5' in told
         assert '--mock' in flat and '--port COM6' in flat and 'nothing is acquired until you press Start' in flat
 
     def test_it_fits_a_small_terminal(self):
-        assert max(len(line) for line in apps.describe(width=70).splitlines() if 'thermospectro_export' not in line) <= 80
-        assert max(len(line) for line in apps.describe(width=100).splitlines() if 'thermospectro_export' not in line) <= 100
+        assert max(len(line) for line in apps.describe(width=70).splitlines()) <= 80
+        assert max(len(line) for line in apps.describe(width=100).splitlines()) <= 100
 
     def test_the_names_alone_are_one_per_line(self, capsys):
         assert apps.main(['--names']) == 0
 
         assert capsys.readouterr().out.split() == list(CONFIGURATIONS)
 
-    def test_the_commands_of_the_package_are_the_applications_and_this_one(self):
-        assert [name for name in scripts() if name != 'lab_apps'] == list(CONFIGURATIONS)
+    def test_the_commands_of_the_package_are_the_applications_and_these_two(self):
+        assert [name for name in scripts() if name not in ('lab_apps', 'lab_export')] == list(CONFIGURATIONS)
         assert scripts()['lab_apps'] == 'pymodaq_plugins_thermospectro.apps:main'
+        assert scripts()['lab_export'] == 'pymodaq_plugins_thermospectro.export:main'
 
     def test_help_and_a_wrong_option(self, capsys):
         with pytest.raises(SystemExit) as stop:
@@ -65,11 +66,12 @@ class TestTheList:
             apps.main(['--nonsense'])
         assert stop.value.code == 2
 
-    def test_the_converter_is_shown_where_it_is(self):
-        text = apps.export_command()
+    def test_the_converter_is_a_command_which_can_be_started(self):
+        from pymodaq_plugins_thermospectro import export
 
-        assert text.startswith('python ') and text.endswith('thermospectro_export.py FILE.h5')
-        assert Path(text.split()[1]).exists()  # (the repository: the script is next to the package)
+        module, function = scripts()['lab_export'].split(':')
+        assert module == export.__name__ and callable(getattr(export, function))
+        assert apps.OTHER_COMMANDS[1][0].startswith('lab_export')
 
 
 def test_it_runs_as_a_module_and_needs_no_qt():

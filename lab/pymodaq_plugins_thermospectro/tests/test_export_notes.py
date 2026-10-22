@@ -1,4 +1,4 @@
-"""tools/thermospectro_export.py with what the user wrote: the observations (csv) and the protocol (text)"""
+"""lab_export with what the user wrote: the observations (csv) and the protocol, in the report (text)"""
 import datetime
 
 import h5py
@@ -125,25 +125,36 @@ class TestTheObservations:
         assert times.tolist() == [1., 2.] and texts == ['one', 'two']
 
 
-class TestTheProtocol:
+class TestTheReport:
+    """``<file>_experiment.txt``: what was written about the experiment, the observations, the instruments, the units"""
+
+    def text(self, out):
+        return read_text(out / 'Sample12_experiment.txt')
+
     def test_it_is_a_text_with_what_was_said(self, h5saver, qapp, tmp_path):
         path = write_file(h5saver, tmp_path, metadata=METADATA)
 
         out = run_export(path, tmp_path)
 
-        lines = read_text(out / 'Sample12_protocol.txt').splitlines()
-        assert lines[:4] == ['Experiment: Ramp 3', 'Sample: Pomme 12', 'Operator: Émile', 'Application: thermo_spectro']
-        assert lines[4].startswith('Started: ') and lines[5] == 'File: Sample12.h5'
-        assert lines[6:] == ['', 'Protocol', '--------', '1. Heat to 80 °C at 2 °C/min', '2. Hold 10 min']
+        lines = self.text(out).splitlines()
+        assert lines[:6] == ['ThermoSpectro experiment', '========================', 'Experiment: Ramp 3',
+                             'Sample: Pomme 12', 'Operator: Émile', 'Application: thermo_spectro']
+        assert lines[6].startswith('Started: ') and lines[7].startswith('Duration: ')
+        assert lines[8] == 'File: Sample12.h5' and lines[9].startswith('Exported: ')
+        index = lines.index('Protocol')
+        assert lines[index - 1] == '' and lines[index + 1] == '--------'
+        assert lines[index + 2:index + 4] == ['1. Heat to 80 °C at 2 °C/min', '2. Hold 10 min']
 
-    def test_it_says_when_the_file_was_made(self, h5saver, qapp, tmp_path):
+    def test_it_says_when_the_file_was_made_and_how_long_it_lasted(self, h5saver, qapp, tmp_path):
         before = datetime.datetime.now().replace(microsecond=0)
-        path = write_file(h5saver, tmp_path, metadata=METADATA)
+        path = write_file(h5saver, tmp_path, metadata=METADATA)  # (six readouts, one second apart)
 
         out = run_export(path, tmp_path)
 
-        started = [line for line in read_text(out / 'Sample12_protocol.txt').splitlines() if line.startswith('Started')][0]
+        lines = self.text(out).splitlines()
+        started = [line for line in lines if line.startswith('Started')][0]
         assert before <= datetime.datetime.strptime(started, 'Started: %Y-%m-%d %H:%M:%S') <= datetime.datetime.now()
+        assert 'Duration: 0:05' in lines
 
     def test_what_was_not_said_is_not_listed(self, h5saver, qapp, tmp_path):
         path = write_file(h5saver, tmp_path, metadata={'experiment_title': '', 'sample': 'Pomme 12', 'operator': '',
@@ -151,8 +162,8 @@ class TestTheProtocol:
 
         out = run_export(path, tmp_path)
 
-        text = read_text(out / 'Sample12_protocol.txt')
-        assert 'Sample: Pomme 12' in text and 'Experiment' not in text and 'Operator' not in text
+        text = self.text(out)
+        assert 'Sample: Pomme 12' in text and 'Experiment:' not in text and 'Operator:' not in text
         assert 'Protocol' not in text
 
     def test_a_protocol_alone_is_enough(self, h5saver, qapp, tmp_path):
@@ -160,16 +171,17 @@ class TestTheProtocol:
 
         out = run_export(path, tmp_path)
 
-        assert read_text(out / 'Sample12_protocol.txt').endswith('Protocol\n--------\nJust this\n')
+        assert 'Protocol\n--------\nJust this\n' in self.text(out)
 
-    def test_nothing_said_no_file(self, h5saver, qapp, tmp_path):
-        """The application is not something the user said"""
-        path = write_file(h5saver, tmp_path, metadata={'experiment_title': '', 'sample': '', 'operator': '',
-                                                       'protocol': '', 'application': 'thermo_spectro'})
+    def test_nothing_said_there_is_still_a_report_of_the_instruments_and_the_units(self, h5saver, qapp, tmp_path):
+        path = write_file(h5saver, tmp_path)
 
         out = run_export(path, tmp_path)
 
-        assert not (out / 'Sample12_protocol.txt').exists()
+        text = self.text(out)
+        assert 'Protocol' not in text and 'Observations' not in text
+        assert 'Spectrometer 1: Spectro1, thermal controller Thermo1' in text
+        assert 'A: mean of the pixels in 500-510 nm' in text
 
     def test_a_long_protocol_in_any_language_is_whole(self, h5saver, qapp, tmp_path):
         protocol = 'Rampe 20→80 °C à 2 °C/min — échantillon n°3 😀\n' * 6000
@@ -177,14 +189,47 @@ class TestTheProtocol:
 
         out = run_export(path, tmp_path)
 
-        assert read_text(out / 'Sample12_protocol.txt').endswith('--------\n' + protocol.rstrip('\n') + '\n')
+        assert '--------\n' + protocol.rstrip('\n') + '\n' in self.text(out)
 
     def test_the_file_is_in_utf8_with_a_signature_like_the_csv_files(self, h5saver, qapp, tmp_path):
         path = write_file(h5saver, tmp_path, metadata=METADATA)
 
         out = run_export(path, tmp_path)
 
-        assert (out / 'Sample12_protocol.txt').read_bytes().startswith(b'\xef\xbb\xbf')
+        assert (out / 'Sample12_experiment.txt').read_bytes().startswith(b'\xef\xbb\xbf')
+
+    def test_the_observations_are_listed_with_their_time(self, h5saver, qapp, tmp_path):
+        path = write_file(h5saver, tmp_path, [(1002.5, 'Door opened'), (1004., 'The sample turned yellow')])
+
+        out = run_export(path, tmp_path)
+
+        lines = self.text(out).splitlines()
+        index = lines.index('Observations')
+        assert lines[index + 1] == '------------'
+        assert lines[index + 3].endswith(f'{clock(1002.5)}   Door opened') and lines[index + 3].lstrip().startswith('0:02')
+        assert lines[index + 4].endswith(f'{clock(1004.)}   The sample turned yellow')
+        assert lines[index + 4].lstrip().startswith('0:04')
+
+    def test_the_units_are_told(self, h5saver, qapp, tmp_path):
+        path = write_file(h5saver, tmp_path)
+
+        out = run_export(path, tmp_path)
+
+        text = self.text(out)
+        assert 'Units\n-----\n' in text and 'temperature: °C' in text
+        assert 'wavelength: nm (spectrometer 1)' in text
+        assert 'intensity (spectrometer 1): counts; values of the ROIs: counts' in text
+
+    def test_the_files_which_were_written_are_listed(self, h5saver, qapp, tmp_path):
+        path = write_file(h5saver, tmp_path, [(1002.5, 'Door opened')])
+
+        out = run_export(path, tmp_path)
+
+        text = self.text(out)
+        assert 'Files\n-----\n' in text
+        for name in ('Sample12_spectrometer1.csv', 'Sample12_spectrometer1_spectra.csv', 'Sample12_notes.csv',
+                     'Sample12_experiment.txt'):
+            assert name in text and (out / name).exists()
 
 
 class TestAFileMadeBefore:
@@ -195,8 +240,8 @@ class TestAFileMadeBefore:
 
         out = run_export(path, tmp_path)
 
-        assert sorted(file.name for file in out.iterdir()) == ['Sample12_spectrometer1.csv',
-                                                               'Sample12_spectrometer1_wavelengths.csv']
+        assert sorted(file.name for file in out.iterdir()) == ['Sample12_experiment.txt', 'Sample12_spectrometer1.csv',
+                                                               'Sample12_spectrometer1_spectra.csv']
 
     def test_nothing_is_read_where_there_is_nothing(self, h5saver, qapp, tmp_path):
         path = write_file(h5saver, tmp_path)

@@ -322,11 +322,21 @@ class TestIntegrationTime:
 
         assert calls == [('Spectro2', 40.)]
 
-    def test_it_cannot_be_changed_during_an_experiment(self, ext, qtbot):
+    def test_it_can_be_changed_during_an_experiment_and_the_readout_time_cannot(self, ext, qtbot):
         run(qtbot, ext, **SLOW)
 
-        assert not any(ui_enabled(unit.settings.child('integration_time')) for unit in ext.units[:2])
+        assert all(ui_enabled(unit.settings.child('integration_time')) for unit in ext.units[:2])  # (it is saved)
         assert not any(ui_enabled(unit.settings.child('readout_time')) for unit in ext.units[:2])
+        end_run(qtbot, ext)
+
+    def test_a_change_during_an_experiment_is_set_before_the_next_readout(self, ext, calls, qtbot):
+        run(qtbot, ext, **SLOW)
+        calls.clear()
+
+        ext.unit(2).settings.child('integration_time').setValue(40.)
+
+        assert calls == []  # (not at once: a readout may be going on)
+        wait_for(qtbot, lambda: calls == [('Spectro2', 40.)])
         end_run(qtbot, ext)
 
     def test_a_spectrometer_without_integration_time_is_not_an_error(self, ext, qtbot):

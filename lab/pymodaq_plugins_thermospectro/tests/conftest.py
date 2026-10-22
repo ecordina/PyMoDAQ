@@ -70,7 +70,7 @@ def ext(dashboard, qtbot, tmp_path, monkeypatch):
     """The extension on that Dashboard. Dialogs are replaced: what the user would be told is in ext.notifications
 
     The ROIs and the settings of the Saving window are remembered in the folder of the test, and the files are made in its
-    ``data`` folder. The experiments are quick: a readout every 0.1 s, a ramp from 0 to 3 (the Mock thermostat starts at
+    ``data`` folder. The integration time is not saved (it is by default: that has its own tests). The experiments are quick: a readout every 0.1 s, a ramp from 0 to 3 (the Mock thermostat starts at
     0) in 2 s, one cycle.
     """
     from pymodaq.utils.gui_utils.loader_utils import create_extension
@@ -93,6 +93,7 @@ def ext(dashboard, qtbot, tmp_path, monkeypatch):
         settings = unit.settings
         settings.child('integration_time').setValue(20.)  # (the defaults, 500 ms and 1 s, make slow tests)
         settings.child('readout_time').setValue(0.1)
+        settings.child('record', 'integration_time').setValue(False)  # (the default, which saves it, has its own tests)
         if isinstance(settings, CameraSettings):  # (inside the Mock image)
             settings.set_rois([RectRoi(f'ROI {i}', 10. * i, 10. * i + 8., 5. * i, 5. * i + 8.) for i in range(1, 4)])
         else:
