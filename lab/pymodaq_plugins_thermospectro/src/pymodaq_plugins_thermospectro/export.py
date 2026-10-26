@@ -35,6 +35,12 @@ readout, for the values, the spectra and the crops which were saved as they were
 The time is in seconds from the first measurement of the experiment, the same zero in all the files
 (``--absolute-time`` gives the epoch seconds instead).
 
+**The file of an experiment which is running** can be converted: it is read in SWMR mode (single writer, multiple readers),
+asked for on every system, and the files hold what is saved so far (the text says so, and the program says it too). The
+first seconds after Start (the file is not readable yet) and the last moments of the experiment (the file is closed and
+finished) are waited for, up to ``--wait`` seconds. Do not leave the file open in another program (or start a long
+conversion) when the experiment ends: its last step needs the file to itself.
+
 Needs ``numpy``, ``h5py`` and, for the images, ``tifffile`` (``python -m pip install tifffile``). It does not need
 PyMoDAQ: this file can be copied alone to any computer and run with ``python export.py FILE.h5``.
 """
@@ -48,6 +54,7 @@ import glob
 import json
 import re
 import sys
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterator, Optional, Sequence
@@ -66,6 +73,17 @@ TIF_PART_BYTES = 3_500_000_000
 MAX_GAP = 3.0
 #: The integration time is in ms in the file
 INTEGRATION_UNITS = 'ms'
+#: How long (s) to wait for the file of a running experiment which is being created (its first seconds) or closed (its last
+#: moments), and how often to try again meanwhile
+WAIT = 10.0
+RETRY_EVERY = 0.25
+#: What HDF5 says (in some words) of a file which is being written
+BUSY_WORDS = ('lock file', 'locking', 'already open')
+#: How the file is read, in this order. 1: in SWMR mode (single writer, multiple readers), which a file being written needs
+#: and a finished file does not mind, with the locks of the library. 2: the same without the locks, when they refuse (what
+#: PyMoDAQ does on Windows): HDF5 itself refuses it if the file is not in SWMR mode, so nothing half written is read.
+#: 3: as an ordinary file (one which was not written in SWMR mode, an old one)
+OPEN_MODES = ({'swmr': True}, {'swmr': True, 'locking': False}, {})
 #: The what the aggregations of the ROIs of a camera are called in the text
 AGGREGATION_WORDS = {'mean': 'mean', 'sum': 'sum', 'median': 'median', 'min': 'minimum', 'max': 'maximum',
                      'std': 'standard deviation', 'crop': 'crop'}
@@ -193,12 +211,107 @@ def was_divided(series: Series) -> bool:
     return bool(series.attrs.get('per_integration', False))
 
 
-def open_file(path: Path):
+class FileBusy(OSError):
+    """The file is being created or closed by a running experiment, or another program has it open for writing"""
+
+
+def looks_busy(error: Exception) -> bool:
+    """What HDF5 said is about a file which is being written (a lock it could not take, a file already open for writing, not
+    in SWMR mode yet)"""
+    return isinstance(error, BlockingIOError) or any(word in str(error).lower() for word in BUSY_WORDS)
+
+
+def open_file(path: Path, wait: float = 0.0):
+    """Open the h5 file of an experiment for reading, **in SWMR mode**: the file of an experiment which is running can be read
+
+    The modes are tried in the order of :data:`OPEN_MODES`, the same on every system. A file which a running experiment is
+    creating (its first seconds, until every group has its first data) or closing (its last moments) cannot be read: it is
+    tried again every quarter of a second for `wait` seconds.
+
+    Parameters
+    ----------
+    path: Path
+    wait: float
+        How long to try again when the file is busy, in seconds
+
+    Raises
+    ------
+    FileNotFoundError
+        if there is no such file
+    FileBusy
+        if the file is still busy after `wait` seconds
+    OSError
+        if the file cannot be read for another reason (it is not an h5 file...)
+    """
     import h5py
+    path = Path(path)
+    if not path.exists():
+        raise FileNotFoundError('no such file')
+    deadline = time.monotonic() + max(float(wait), 0.0)
+    told = False
+    while True:
+        errors = []
+        for kwargs in OPEN_MODES:
+            try:
+                return h5py.File(path, 'r', **kwargs)
+            except TypeError:  # (an h5py too old to know the option)
+                continue
+            except OSError as e:
+                errors.append(e)
+        if not errors:
+            raise OSError('the file cannot be opened')
+        if not any(looks_busy(e) for e in errors):
+            raise errors[0]  # (not the file of a running experiment: what HDF5 says is the message)
+        if time.monotonic() >= deadline:
+            raise FileBusy('the file cannot be read for now: a running experiment is creating it (the first seconds after '
+                           'Start) or closing it (its last moments), or another program has it open for writing. Try '
+                           f'again in a few seconds ({str(errors[0]).strip()})') from errors[0]
+        if not told:
+            told = True
+            print(f'  {path.name}: a running experiment is creating or closing the file: waiting for it (up to '
+                  f'{wait:g} s)', file=sys.stderr)
+        time.sleep(RETRY_EVERY)
+
+
+def typical_interval(units: dict[int, 'UnitData']) -> float:
+    """The time between two readouts (s): the shortest of the groups which have a few rows (0 if none has)"""
+    gaps = []
+    for unit in units.values():
+        for series in unit.series.values():
+            rows = len(series)
+            if rows >= 3:
+                gaps.append(float(np.median(np.diff(series.time[:min(rows, 200)]))))
+    return min(gaps) if gaps else 0.0
+
+
+def file_status(file, units: dict[int, 'UnitData'], now: Optional[float] = None) -> tuple[str, str]:
+    """Whether the file is complete, still being written or was not closed
+
+    The writer flags the file as being written (the attribute ``swmr_active`` of the root) until the end of the experiment.
+
+    Returns
+    -------
+    (state, text)
+        ``complete`` (no text), ``running`` (the last data are recent) or ``abnormal`` (the file was not closed and nothing
+        was written for a while: the program or the experiment stopped), with a sentence
+    """
     try:
-        return h5py.File(path, 'r')
-    except OSError:  # a file which is still being written (SWMR)
-        return h5py.File(path, 'r', swmr=True)
+        active = bool(np.asarray(file.attrs.get('swmr_active', False)))
+    except (TypeError, ValueError):
+        active = False
+    if not active:
+        return 'complete', ''
+    now = time.time() if now is None else now
+    try:
+        first, last = experiment_start(units), experiment_end(units)
+    except ValueError:  # (nothing was saved yet)
+        return 'running', 'the experiment has just started: nothing is saved yet'
+    if now - last <= max(30.0, 5 * typical_interval(units)):
+        return 'running', (f'the experiment is still running (the last data are from {clock_time(last)}, {max(now - last, 0):.0f} '
+                           f's ago): this is what is saved so far, convert again later for more')
+    return 'abnormal', (f'the file was not closed: the experiment, or the program, stopped abnormally after '
+                        f'{duration_text(last - first)} (the last data are from {clock_time(last)}); everything which was '
+                        f'saved is converted')
 
 
 def read_series(title: str, kind: str, group) -> Series:
@@ -540,7 +653,8 @@ def unit_lines(unit: UnitData, files: dict[str, str]) -> list[str]:
 
 
 def report_text(file, units: dict[int, UnitData], description: dict[str, str], times: np.ndarray, texts: Sequence[str],
-                t0: float, written: Sequence[tuple[Path, str]], crop_files: dict[int, dict[str, str]]) -> str:
+                t0: float, written: Sequence[tuple[Path, str]], crop_files: dict[int, dict[str, str]],
+                status: str = '') -> str:
     """What the user wrote about the experiment, the observations, the instruments, the units and the files, as a text"""
     said = {key: description.get(key, '').strip() for key in DESCRIPTION}
     lines = ['ThermoSpectro experiment', '========================']
@@ -555,6 +669,8 @@ def report_text(file, units: dict[int, UnitData], description: dict[str, str], t
     except ValueError:
         pass
     lines.append(f'File: {Path(file.filename).name}')
+    if status:  # (the experiment is running, or did not end properly: the data may stop before the end of the experiment)
+        lines.append(f'Status: {status}')
     lines.append(f'Exported: {clock_time(datetime.datetime.now().timestamp())}')
     if said['protocol']:
         lines += ['', 'Protocol', '--------', said['protocol']]
@@ -936,8 +1052,9 @@ def nearest_index(time: np.ndarray, at: np.ndarray) -> np.ndarray:
 # ----------------------------------------------------------------------------------------------------------------------
 # the command
 # ----------------------------------------------------------------------------------------------------------------------
-def describe(units: dict[int, UnitData], description: Optional[dict[str, str]] = None, n_notes: int = 0) -> str:
-    lines = []
+def describe(units: dict[int, UnitData], description: Optional[dict[str, str]] = None, n_notes: int = 0,
+             status: str = '') -> str:
+    lines = [f'  {status}'] if status else []
     said = [f'{label} {description[key]}' for label, key in (('experiment', 'experiment_title'), ('sample', 'sample'),
                                                              ('operator', 'operator')) if (description or {}).get(key)]
     if said:
@@ -964,11 +1081,12 @@ def export_file(path: Path, out: Optional[Path], options) -> list[Path]:
     stem = folder / path.stem
     written: list[tuple[Path, str]] = []
     crop_files: dict[int, dict[str, str]] = {}
-    with open_file(path) as file:
+    with open_file(path, getattr(options, 'wait', 0.0)) as file:
         units = read_experiment(file, options.experiment)
         description = read_description(file)
         times, texts = read_notes(experiment_group(file, options.experiment)[0])
-        print(f'{path}:\n{describe(units, description, len(texts))}')
+        status = file_status(file, units)[1]
+        print(f'{path}:\n{describe(units, description, len(texts), status)}')
         if options.list:
             return []
         t0 = experiment_start(units)
@@ -991,7 +1109,7 @@ def export_file(path: Path, out: Optional[Path], options) -> list[Path]:
             written.append((notes, 'the observations noted during the experiment, with their time'))
         report = stem.with_name(f'{stem.name}_experiment.txt')
         written.append((report, 'this text: what was written about the experiment, the instruments and the units'))
-        report.write_text(report_text(file, units, description, times, texts, t0, written, crop_files),
+        report.write_text(report_text(file, units, description, times, texts, t0, written, crop_files, status),
                           encoding='utf-8-sig')
     return [path for path, _ in written]
 
@@ -1014,6 +1132,9 @@ def parser() -> argparse.ArgumentParser:
     arguments.add_argument('--per-integration-time', action='store_true',
                            help='divide the values of the ROIs and the spectra which were saved as they were measured '
                                 'by the integration time of each readout (A.U./ms)')
+    arguments.add_argument('--wait', type=float, default=WAIT, metavar='SECONDS',
+                           help='how long to wait for the file of a running experiment which is being created (its first '
+                                f'seconds) or closed (its last moments), default {WAIT:g}; 0: do not wait')
     arguments.add_argument('--no-spectra', action='store_true', help='do not write the csv file of the full spectra')
     arguments.add_argument('--no-tif', action='store_true', help='do not write the tif files (the csv files only)')
     arguments.add_argument('--absolute-time', action='store_true', help='the time in epoch seconds, not from the start')

@@ -635,3 +635,56 @@ def test_data_marked_to_be_saved_is_kept(h5saver, qapp):
 
     assert len(experiment.saver.detectors['Unit1_Spectrum'].filter_data(dte)) == 1
     experiment.finish()
+
+
+class TestWhenSwmrCannotBeStarted:
+    """SWMR is what lets another program (lab_export) read the file while it is written: the data do not depend on it"""
+
+    def test_the_data_are_saved_and_it_is_told_once(self, h5saver, qapp, monkeypatch):
+        calls = []
+
+        def refuse():
+            calls.append(1)
+            raise OSError('refused by this system')
+
+        monkeypatch.setattr(h5saver, 'enable_swmr', refuse)
+        unit = make_unit()
+        experiment = Experiment(h5saver, [unit])
+
+        for index in range(4):
+            experiment.write(unit, index)
+
+        saver = experiment.saver
+        assert not saver.swmr_started and 'refused by this system' in saver.swmr_error
+        assert saver.n_errors == 0  # (nothing was lost: it is not an error of the data)
+        assert len(calls) == 1  # (and it is not tried again at each measurement)
+        experiment.finish()
+        with h5py.File(experiment.path, 'r') as f:
+            assert titles(f['RawData/Datalogger000'])['Unit1_ROIs']['Data0D/CH00/EnlData00'].shape[0] == 4
+
+    def test_the_failure_is_forgotten_by_the_next_experiment(self, h5saver, qapp, monkeypatch):
+        monkeypatch.setattr(h5saver, 'enable_swmr', lambda: (_ for _ in ()).throw(OSError('refused')))
+        unit = make_unit()
+        experiment = Experiment(h5saver, [unit])
+        experiment.write(unit, 0)
+        assert experiment.saver.swmr_error
+
+        experiment.saver.configure(experiment.recordings)
+
+        assert experiment.saver.swmr_error == ''
+        experiment.finish()
+
+    def test_the_groups_which_hold_it_up_are_named(self, h5saver, qapp):
+        unit = make_unit()
+        experiment = Experiment(h5saver, [unit])
+        assert experiment.saver.waiting_for == sorted(experiment.saver.expected) and experiment.saver.waiting_for
+
+        first = build_dtes(experiment.recordings[0], make_measurement(unit, 0))[0]
+        experiment.saver.add_data_bundle(DataBundle(dte=first))
+
+        assert first.name not in experiment.saver.waiting_for and experiment.saver.waiting_for
+        assert not experiment.saver.swmr_started  # (SWMR waits for the others)
+        for dte in build_dtes(experiment.recordings[0], make_measurement(unit, 0)):
+            experiment.saver.add_data_bundle(DataBundle(dte=dte))
+        assert experiment.saver.waiting_for == [] and experiment.saver.swmr_started
+        experiment.finish()

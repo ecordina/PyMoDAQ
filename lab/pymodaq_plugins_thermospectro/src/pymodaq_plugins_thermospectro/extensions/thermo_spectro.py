@@ -132,6 +132,7 @@ class ThermoSpectro(CustomExt):
         self._ending = False  # a stop was asked: the log ends when the ramps are back, whatever the other units do
         self._saving = False
         self._swmr = False
+        self._swmr_told = ''  # what was said of SWMR in this run: '', 'waiting' (not started yet) or 'done'
         self._recordings: dict[int, UnitRecording] = {}
         self._origin = time.time()
         self._roi_dirty: set[int] = set()
@@ -1353,6 +1354,7 @@ class ThermoSpectro(CustomExt):
             self._recordings = {recording.number: recording for recording in recordings}
             self._saving = self.is_action_checked(WorkFlowActions.LOG) and any(r.is_saved for r in recordings)
             self._swmr = False
+            self._swmr_told = ''
             self.saving_panel.clear_notes()  # (the observations of the previous experiment are in its file)
             if self._saving:
                 self._swmr = self._prepare_file()
@@ -1410,6 +1412,7 @@ class ThermoSpectro(CustomExt):
             unit.program_tick(now)
         self._check_watchdogs()
         self._show_status()
+        self._check_swmr()
         self._update_run_actions()
         if self._duration_over() and not self._duration_stop_asked:
             self._duration_stop_asked = True  # (once: a second Stop would offer to leave a returning ramp where it is)
@@ -1417,6 +1420,37 @@ class ThermoSpectro(CustomExt):
             return
         if self._experiment_over():
             self._finish_run(self._over_message())
+
+    #: s after the start of an experiment from which the user is told that the file cannot be read yet by another program
+    SWMR_NOTICE = 20.0
+
+    def _check_swmr(self):
+        """Tell the user whether the file can be read by another program (``lab_export``...) while the experiment runs
+
+        Once SWMR is on, or it cannot be (the h5py backend is not there, or HDF5 refused), or it has not started after a while
+        (a group is still waiting for its first data: a module which delivers nothing).
+        """
+        if self._swmr_told == 'done' or not self._saving:
+            return
+        saver = self._module_and_data_saver
+        if not self._swmr:
+            message = ('The file is not written in SWMR mode (the h5py backend is needed): it can only be read when the '
+                       'experiment is over')
+        elif saver.swmr_started:
+            message = 'The file can be read while the experiment runs (SWMR is on): lab_export can be used from now on'
+        elif saver.swmr_error:
+            message = f'SWMR could not be started ({saver.swmr_error}): the file can only be read when the experiment is over'
+        elif self._swmr_told != 'waiting' and time.time() - self._origin > self.SWMR_NOTICE:
+            self._swmr_told = 'waiting'
+            message = ('The file cannot be read by another program yet: SWMR starts when every group has its first data, '
+                       f'waiting for {", ".join(saver.waiting_for)}')
+            logger.warning(message)
+            self.status_signal.emit(message)
+            return
+        else:
+            return
+        self._swmr_told = 'done'
+        self.status_signal.emit(message)
 
     def log_duration(self) -> Optional[float]:
         """s, how long the log lasts, None if it lasts until Stop is pressed"""

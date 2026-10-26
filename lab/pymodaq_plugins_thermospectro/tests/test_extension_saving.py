@@ -468,3 +468,66 @@ class TestWhatIsRemembered:
 
         assert ext.saving_panel.values()['operator'] == 'Léa'
         assert any('could not be remembered' in record.getMessage() for record in caplog.records)
+
+
+class TestTheUserIsToldWhetherTheFileCanBeRead:
+    """By another program (lab_export...) while the experiment runs: it needs SWMR, which starts a moment after Start"""
+
+    def test_it_is_said_once_when_swmr_is_on(self, ext, qtbot, tmp_path):
+        messages = []
+        ext.status_signal.connect(messages.append)
+
+        run(qtbot, ext, **SLOW)
+        wait_for(qtbot, lambda: any('SWMR is on' in message for message in messages))
+        qtbot.wait(1500)
+        end_run(qtbot, ext)
+
+        assert [m for m in messages if 'SWMR' in m] == [
+            'The file can be read while the experiment runs (SWMR is on): lab_export can be used from now on']
+
+    def test_it_is_said_when_swmr_cannot_be_started_and_the_data_are_saved_all_the_same(self, ext, qtbot, tmp_path,
+                                                                                         monkeypatch):
+        from pymodaq_data.h5modules.backends import H5Backend
+
+        def refuse(self):
+            raise OSError('this system refuses')
+
+        monkeypatch.setattr(H5Backend, 'enable_swmr', refuse)
+        messages = []
+        ext.status_signal.connect(messages.append)
+
+        run(qtbot, ext, **SLOW)
+        wait_for(qtbot, lambda: any('SWMR could not be started' in message for message in messages))
+        wait_for(qtbot, lambda: ext.unit(1).n_measurements >= 4)
+        end_run(qtbot, ext)
+
+        assert any('this system refuses' in m and 'only be read when the experiment is over' in m for m in messages)
+        assert not any('could not be saved' in m for m in messages)
+        with H5Experiment(tmp_path) as saved:
+            assert len(saved.time('Unit1_ROIs')) >= 3
+
+    def test_it_is_said_when_a_group_does_not_get_its_first_data(self, ext, qtbot, tmp_path, monkeypatch):
+        from pymodaq_plugins_thermospectro.saving import ThermoSpectroSaver
+        monkeypatch.setattr(ThermoSpectroSaver, '_start_swmr_when_complete', lambda self: None)
+        monkeypatch.setattr(ThermoSpectroSaver, 'waiting_for', property(lambda self: ['Unit2_Spectrum']))
+        monkeypatch.setattr(ext, 'SWMR_NOTICE', 0.5)
+        messages = []
+        ext.status_signal.connect(messages.append)
+
+        run(qtbot, ext, **SLOW)
+        wait_for(qtbot, lambda: any('waiting for Unit2_Spectrum' in message for message in messages))
+        qtbot.wait(1500)
+        end_run(qtbot, ext)
+
+        assert len([m for m in messages if 'cannot be read by another program yet' in m]) == 1  # (said once)
+
+    def test_it_is_said_when_the_file_is_not_written_in_swmr_mode(self, ext, qtbot, tmp_path, monkeypatch):
+        from pymodaq_plugins_thermospectro import saving
+        original = saving.prepare_file
+        monkeypatch.setattr(saving, 'prepare_file', lambda h5saver, **kwargs: (original(h5saver, **kwargs), False)[1])
+        messages = []
+        ext.status_signal.connect(messages.append)
+
+        run(qtbot, ext, **SLOW)
+        wait_for(qtbot, lambda: any('not written in SWMR mode' in message for message in messages))
+        end_run(qtbot, ext)

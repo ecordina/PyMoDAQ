@@ -232,7 +232,9 @@ per readout), `FILE_spectrometer1_spectra.csv` (the full spectra, one row each, 
 camera which are numbers, with the frame of the tif where there is an image), `FILE_camera.tif` (the images, axes T, C, Y, X),
 `FILE_camera_crop_<name>.tif` (the pixels of each crop), and `FILE_experiment.txt` (the title, the sample, the operator, the
 protocol, the observations with their time, the instruments, the ROIs, the units and the files; the observations are also in
-`FILE_notes.csv`). The time is in seconds from the first measurement, the same zero everywhere; `--per-integration-time` divides
+`FILE_notes.csv`). The file can be converted while the experiment runs (it is read in SWMR mode, on Windows too; the first
+seconds and the last moments are waited for, `--wait`; the text says that the files hold what was saved so far), but do not
+leave it open elsewhere when the experiment ends. The time is in seconds from the first measurement, the same zero everywhere; `--per-integration-time` divides
 the values, the spectra and the crops of the spectra by the integration time of each readout (not twice what was divided already); `--list` tells what a file holds; `--help` has the rest.
 
 ## Safety

@@ -506,6 +506,7 @@ class ThermoSpectroSaver(ExtensionSaver):
         self._seen: set[str] = set()
         self._notes = None  # the two arrays of the observations (time, text) of the file being written
         self.swmr_started = False
+        self.swmr_error = ''  # why SWMR could not be started (the data are saved all the same)
         self.n_errors = 0  # the data that could not be saved
 
     def configure(self, recordings: Iterable[UnitRecording]):
@@ -532,7 +533,14 @@ class ThermoSpectroSaver(ExtensionSaver):
         self._seen = set()
         self._notes = None
         self.swmr_started = False
+        self.swmr_error = ''
         self.n_errors = 0
+
+    @property
+    def waiting_for(self) -> list[str]:
+        """The groups which have not received their first data: SWMR starts when there is none (see
+        :meth:`_start_swmr_when_complete`)"""
+        return sorted(self.expected - self._seen)
 
     @property
     def notes_ready(self) -> bool:
@@ -664,11 +672,17 @@ class ThermoSpectroSaver(ExtensionSaver):
     def _start_swmr_when_complete(self):
         """Nothing can be created in a file once SWMR is on: it is switched on when every group has its first data"""
         h5saver = self._h5saver
-        if self.swmr_started or not h5saver.swmr_mode or not h5saver.is_swmr_capable:
+        if self.swmr_started or self.swmr_error or not h5saver.swmr_mode or not h5saver.is_swmr_capable:
             return
         if self._seen >= self.expected:
-            h5saver.flush()
-            h5saver.enable_swmr()
+            try:
+                h5saver.flush()
+                h5saver.enable_swmr()
+            except Exception as e:  # (the data are saved: only the reading of the file by another program is lost)
+                self.swmr_error = f'{type(e).__name__}: {e}'
+                logger.warning(f'The file could not be switched to SWMR mode: it cannot be read by another program until the '
+                               f'experiment is over ({self.swmr_error})', exc_info=True)
+                return
             self.swmr_started = True
             logger.info('The file can be read while it is written (SWMR)')
 

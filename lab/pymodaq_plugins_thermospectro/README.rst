@@ -355,6 +355,19 @@ default), ``--with-spectrometers`` (in the csv of the camera, add the temperatur
 the camera: the closest readout of the spectrometer, or ``--interpolate``). The spectra are read from the file a few hundred
 rows at a time: a log of days does not have to fit in memory.
 
+**While an experiment is running.** The file can be converted at any time. ``lab_export`` reads it in **SWMR mode** (single
+writer, multiple readers), which it asks for first on every system, Linux and Windows. If the locks of the system refuse it
+(it happens on Windows), it asks again without them, as PyMoDAQ does: HDF5 itself refuses that when the file is not in SWMR
+mode, so nothing half written is read. The files hold **what has been saved so far**: the program says so, and so does the
+*Status* line of ``..._experiment.txt``; convert again later for more. The first seconds after Start (the file cannot be read
+until every group has its first data) and the last moments of the experiment (the file is being closed and finished) are
+waited for, up to ``--wait`` seconds (10 by default, ``--wait 0`` not to wait): if the file is still busy after that it
+says so, and you try again. The file of an experiment which did not end properly (the program stopped, the computer went
+off) is converted too, up to its last flush, and the text says that it was not closed and when its data stop.
+**Do not leave the file open in another program, and do not start a long conversion, when the experiment ends**: the last
+step of the experiment needs the file to itself, to update the attributes of its arrays (if it cannot, the log says *The end
+of SWMR failed*; the data are safe, and ``lab_export`` does not use those attributes).
+
 
 The data file
 =============
@@ -382,6 +395,12 @@ their title (``Detector000``, ``Actuator000``... only number them):
 ``Notes``              the observations: the arrays ``time`` (epoch seconds, the same time as the data) and ``text``
                        (utf-8), enlarged by each observation
 ====================== ===================================================================================
+
+SWMR starts a moment after Start, once every group has its first data (nothing can be created in the file afterwards): the status
+bar then says *The file can be read while the experiment runs (SWMR is on)*, from when ``lab_export`` (or ``h5py`` with
+``swmr=True``) can read it. If it cannot be started (the h5py backend is missing, or HDF5 refuses), the message says why: the data
+are saved all the same and the file can be read when the experiment is over. If it has not started after 20 s, the message
+names the groups which are still waiting for their first data (a module which delivers nothing).
 
 The units are kept: the arrays have their ``units`` (the temperature in the unit of the thermal controller, the integration time in
 ms; the values of the ROIs, the full spectra, the crops and the images in the intensity unit, per ms if they were divided by the
