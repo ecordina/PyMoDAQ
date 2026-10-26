@@ -32,8 +32,8 @@ pytestmark = pytest.mark.filterwarnings('ignore')
 HEIGHT, WIDTH = 6, 8
 
 
-def make_camera_unit(thermostat=True, rois=None, integration=False, units=None, per_integration=False):
-    camera = FakeCamera('Camera1')
+def make_camera_unit(thermostat=True, rois=None, integration=False, units=None, per_integration=False, channels=1):
+    camera = FakeCamera('Camera1', channels=channels)
     thermo = FakeThermostat('Thermo1') if thermostat else None
     settings = CameraSettings(Parameter.create(**unit_definition(3, rois or [RectRoi('Spot', 1, 4, 1, 3)],
                                                                  kind=CAMERA)), 3)
@@ -46,6 +46,7 @@ def make_camera_unit(thermostat=True, rois=None, integration=False, units=None, 
     settings.child('ramp', 'run').setValue(False)
     unit = CameraUnit(settings, FakeManager(*[m for m in (camera, thermo) if m is not None]))
     unit.attach()
+    unit._n_channels = channels  # (as if an image had come)
     return unit
 
 
@@ -55,7 +56,7 @@ def camera_measurement(unit, index, t0, channels=1, dtype=np.uint16, temperature
     arrays = [(1000 * channel + 10 * rows + columns + index).astype(dtype) for channel in range(channels)]
     frame = Frame(arrays[0].astype(float), time.monotonic(), DataRaw('image', data=arrays))
     rois = unit.settings.rois
-    values = [roi.value(arrays[0].astype(float)) for roi in rois]
+    values = [roi.value(arrays) for roi in rois]
     return Measurement(unit.number, index, t0 + index * 1.0, frame, rois, values, temperature + index, math.nan,
                        None, 0, integration_time=integration)
 
@@ -80,7 +81,7 @@ def write_experiment(h5saver, spectrometer_times=(1000., 1.0, 6), camera_times=(
         units_of[-1].settings.child('record', 'spectrum').setValue(spectrum)
     if camera:
         units_of.append(make_camera_unit(camera_thermostat, camera_rois, camera_integration is not None, units,
-                                         per_integration))
+                                         per_integration, channels))
         units_of[-1].settings.child('record', 'image').setValue(image)
     experiment = Experiment(h5saver, units_of)
     for unit in units_of:

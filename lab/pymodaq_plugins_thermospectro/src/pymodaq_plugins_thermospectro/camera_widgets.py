@@ -15,14 +15,25 @@ from pymodaq_data.data import DataRaw
 from pymodaq_gui.plotting.data_viewers.viewer2D import Viewer2D
 from qtpy import QtCore, QtGui, QtWidgets
 
-from pymodaq_plugins_thermospectro.camera import MODES, RectRoi
+from pymodaq_plugins_thermospectro.camera import (CHANNELS_RULE, MODES, RectRoi, channel_letter, channel_name,
+                                                  format_channels, selected_channels)
 from pymodaq_plugins_thermospectro.roi_manager import (BADGE_WIDTH, CHECK_WIDTH, DELETE_WIDTH, EDGE_WIDTH,
                                                        VALUE_WIDTH, EdgeSpinBox, _quietly)
 
 #: How the ROIs of a camera are set up, for the user
 HINT = ('Drag a rectangle (or one of its corners) on the image, or type its edges here. Double click on the image, '
         'or right click, to add a ROI there. Value: the number a ROI gives (the mean, sum, median, min, max or std '
-        'of its pixels), or crop: its pixels are saved as images (its rectangle is dashed).')
+        'of its pixels), or crop: its pixels are saved as images (its rectangle is dashed). Channels (a camera which gives '
+        'colors): the channels the value is measured on; with several, the results of the channels are averaged.')
+
+#: The width of the box of one channel in the table of the ROIs, and the space between two
+CHANNEL_WIDTH = 32
+CHANNEL_SPACING = 2
+
+
+def channels_width(n: int) -> int:
+    """The width of the cell (and of the title of the column) of the boxes of `n` channels"""
+    return n * CHANNEL_WIDTH + max(n - 1, 0) * CHANNEL_SPACING
 
 
 class _CameraViewer2D(Viewer2D):
@@ -308,13 +319,20 @@ class RectRoiRow(QtWidgets.QWidget):
     name_edited: Signal(str, str)
     aggregation_edited: Signal(str, str)
         The user chose what the ROI gives: one of :data:`~.camera.MODES`
+    channels_edited: Signal(str, str)
+        The user ticked or unticked the box of a channel: the channels as they are written in the settings (``all``, or
+        their numbers counted from 1: ``2, 3``)
     record_toggled: Signal(str, bool)
     plot_toggled: Signal(str, bool)
     delete_clicked: Signal(str)
+
+    The boxes of the channels are there only if the images have several (:meth:`set_channel_count`): there is nothing to
+    choose with one.
     """
     edges_edited = QtCore.Signal(str, float, float, float, float)
     name_edited = QtCore.Signal(str, str)
     aggregation_edited = QtCore.Signal(str, str)
+    channels_edited = QtCore.Signal(str, str)
     record_toggled = QtCore.Signal(str, bool)
     plot_toggled = QtCore.Signal(str, bool)
     delete_clicked = QtCore.Signal(str)
@@ -333,6 +351,8 @@ class RectRoiRow(QtWidgets.QWidget):
         self._name = ''
         self._color = ''
         self._locked = False
+        self._crop = False
+        self._channels: Optional[tuple] = None  # the channels the ROI is measured on (None: all of them)
         self._edges = [0.0, 0.0, 0.0, 0.0]  # as they are in the settings: the boxes only show them rounded
 
         self.badge = QtWidgets.QLabel()
@@ -352,6 +372,12 @@ class RectRoiRow(QtWidgets.QWidget):
         self.aggregation.addItems(MODES)
         self.aggregation.setFixedWidth(VALUE_WIDTH)
         self.aggregation.setToolTip(self.VALUE_TIP)
+        self.channel_boxes: list[QtWidgets.QCheckBox] = []
+        self.channels_cell = QtWidgets.QWidget()  # (no cell at all for an image with one channel)
+        self._channels_layout = QtWidgets.QHBoxLayout(self.channels_cell)
+        self._channels_layout.setContentsMargins(0, 0, 0, 0)
+        self._channels_layout.setSpacing(CHANNEL_SPACING)
+        self.channels_cell.setVisible(False)
         self.record = QtWidgets.QCheckBox()
         self.record.setToolTip('Save this ROI at each measurement: its value, or its pixels if it is a crop')
         self.plot = QtWidgets.QCheckBox()
@@ -369,6 +395,7 @@ class RectRoiRow(QtWidgets.QWidget):
         for box in self.boxes.values():
             layout.addWidget(box)
         layout.addWidget(self.aggregation)
+        layout.addWidget(self.channels_cell)
         for box in (self.record, self.plot):
             cell = QtWidgets.QWidget()
             cell.setFixedWidth(CHECK_WIDTH)
@@ -386,6 +413,52 @@ class RectRoiRow(QtWidgets.QWidget):
         self.record.toggled.connect(lambda checked: self.record_toggled.emit(self.key, checked))
         self.plot.toggled.connect(lambda checked: self.plot_toggled.emit(self.key, checked))
         self.delete.clicked.connect(lambda _=False: self.delete_clicked.emit(self.key))
+
+    @staticmethod
+    def channel_tip(index: int, crop: bool = False) -> str:
+        """What the box of a channel says when the mouse is over it"""
+        if crop:
+            return 'A crop keeps all the channels: the choice is for the ROIs which give a number'
+        return f'{channel_name(index).capitalize()} channel (channel {index + 1} of the image). {CHANNELS_RULE}'
+
+    def set_channel_count(self, n: int):
+        """The images have `n` channels: a box for each (none, and no cell, for one channel: there is nothing to choose)"""
+        n = n if n > 1 else 0
+        if n == len(self.channel_boxes):
+            return
+        for box in self.channel_boxes:
+            self._channels_layout.removeWidget(box)
+            box.hide()  # (deleteLater() alone leaves it on the screen until the event loop runs)
+            box.setParent(None)
+            box.deleteLater()
+        self.channel_boxes = []
+        for index in range(n):
+            box = QtWidgets.QCheckBox(channel_letter(index))
+            box.toggled.connect(lambda checked, i=index: self._channel_toggled(i, checked))
+            self._channels_layout.addWidget(box)
+            self.channel_boxes.append(box)
+        if n:
+            self.channels_cell.setFixedWidth(channels_width(n))
+        self.channels_cell.setVisible(n > 0)
+        self._show_channels()
+
+    def _show_channels(self):
+        """The boxes show the channels of the ROI (all of them for a crop: it keeps them all)"""
+        chosen = selected_channels(None if self._crop else self._channels, len(self.channel_boxes))
+        for index, box in enumerate(self.channel_boxes):
+            if box.isChecked() != (index in chosen):
+                _quietly(box, box.setChecked, index in chosen)
+            box.setToolTip(self.channel_tip(index, self._crop))
+            box.setEnabled(not self._locked and not self._crop)
+
+    def _channel_toggled(self, index: int, checked: bool):
+        chosen = [position for position, box in enumerate(self.channel_boxes) if box.isChecked()]
+        if not chosen:  # (a ROI is measured on one channel at least: this box stays ticked)
+            box = self.channel_boxes[index]
+            _quietly(box, box.setChecked, True)
+            return
+        self._channels = None if len(chosen) == len(self.channel_boxes) else tuple(chosen)
+        self.channels_edited.emit(self.key, format_channels(self._channels))
 
     def _name_finished(self):
         text = self.name.text().strip()
@@ -446,6 +519,9 @@ class RectRoiRow(QtWidgets.QWidget):
         self.plot.setEnabled(not roi.is_crop)
         self.plot.setToolTip('A crop has no value to plot: its pixels are saved as images' if roi.is_crop
                              else self.PLOT_TIP)
+        self._crop = roi.is_crop
+        self._channels = roi.channels
+        self._show_channels()
 
     def show_edges(self, x0: float, x1: float, y0: float, y1: float):
         """The rectangle is being dragged on the image: follow it (nothing is emitted)"""
@@ -459,6 +535,7 @@ class RectRoiRow(QtWidgets.QWidget):
         self._locked = locked
         for widget in (self.name, *self.boxes.values(), self.aggregation, self.record, self.delete):
             widget.setEnabled(not locked)
+        self._show_channels()
 
 
 class RectRoiManager(QtWidgets.QWidget):
@@ -469,6 +546,7 @@ class RectRoiManager(QtWidgets.QWidget):
     edges_edited: Signal(str, float, float, float, float)
     name_edited: Signal(str, str)
     aggregation_edited: Signal(str, str)
+    channels_edited: Signal(str, str)
     record_toggled: Signal(str, bool)
     plot_toggled: Signal(str, bool)
     delete_clicked: Signal(str)
@@ -478,6 +556,7 @@ class RectRoiManager(QtWidgets.QWidget):
     edges_edited = QtCore.Signal(str, float, float, float, float)
     name_edited = QtCore.Signal(str, str)
     aggregation_edited = QtCore.Signal(str, str)
+    channels_edited = QtCore.Signal(str, str)
     record_toggled = QtCore.Signal(str, bool)
     plot_toggled = QtCore.Signal(str, bool)
     delete_clicked = QtCore.Signal(str)
@@ -488,6 +567,7 @@ class RectRoiManager(QtWidgets.QWidget):
         super().__init__(parent)
         self._rows: dict[str, RectRoiRow] = {}
         self._locked = False
+        self._n_channels = 0  # (the boxes of the channels are shown for more than one)
 
         self.add_button = QtWidgets.QPushButton('Add a ROI')
         self.add_button.setToolTip('Add a rectangle in the middle of the image (or double click on the image where '
@@ -506,7 +586,8 @@ class RectRoiManager(QtWidgets.QWidget):
         columns = [('badge', '#', BADGE_WIDTH), ('name', 'Name', 0)] + \
                   [(name, text, EDGE_WIDTH - 14) for name, text in
                    zip(RectRoiRow.EDGE_NAMES, ('x from', 'x to', 'y from', 'y to'))] + \
-                  [('aggregation', 'Value', VALUE_WIDTH), ('record', 'Record', CHECK_WIDTH), ('plot', 'Plot', CHECK_WIDTH), ('delete', '', DELETE_WIDTH)]
+                  [('aggregation', 'Value', VALUE_WIDTH), ('channels', 'Channels', channels_width(3)),
+                   ('record', 'Record', CHECK_WIDTH), ('plot', 'Plot', CHECK_WIDTH), ('delete', '', DELETE_WIDTH)]
         for name, text, width in columns:
             label = QtWidgets.QLabel(text)
             align = QtCore.Qt.AlignmentFlag.AlignLeft if name == 'name' else (
@@ -520,6 +601,8 @@ class RectRoiManager(QtWidgets.QWidget):
                 label.setFixedWidth(width)
             header.addWidget(label, 0 if width else 1)
             self._labels[name] = label
+        self._labels['channels'].setVisible(False)  # (only for images which have several channels)
+        self._labels['channels'].setToolTip(CHANNELS_RULE)
 
         self._body = QtWidgets.QWidget()
         self._rows_layout = QtWidgets.QVBoxLayout(self._body)
@@ -551,11 +634,32 @@ class RectRoiManager(QtWidgets.QWidget):
     def header_text(self, column: str) -> str:
         return self._labels[column].text()
 
+    @property
+    def n_channels(self) -> int:
+        """How many channels the images have, if there are several (0: the boxes of the channels are not shown)"""
+        return self._n_channels
+
+    def set_channels(self, n: int):
+        """The images have `n` channels: each ROI gets a box for each of them, with the column titled *Channels*; nothing for
+        one channel (there is nothing to choose)"""
+        n = n if n > 1 else 0
+        if n == self._n_channels:
+            return
+        self._n_channels = n
+        label = self._labels['channels']
+        if n:
+            label.setFixedWidth(channels_width(n))
+        label.setVisible(n > 0)
+        for row in self._rows.values():
+            row.set_channel_count(n)
+
     def _new_row(self, key: str) -> RectRoiRow:
         row = RectRoiRow(key)
+        row.set_channel_count(self._n_channels)
         row.edges_edited.connect(self.edges_edited)
         row.name_edited.connect(self.name_edited)
         row.aggregation_edited.connect(self.aggregation_edited)
+        row.channels_edited.connect(self.channels_edited)
         row.record_toggled.connect(self.record_toggled)
         row.plot_toggled.connect(self.plot_toggled)
         row.delete_clicked.connect(self.delete_clicked)

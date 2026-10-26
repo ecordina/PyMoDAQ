@@ -72,11 +72,13 @@ class FakeDetector(QtCore.QObject):
 
 class FakeCamera(FakeDetector):
     """A camera: answers a snap with an image after `delay` ms. The value of the pixel of column x and row y is
-    ``x + 100 * y`` (plus `offset`), so that the mean over a rectangle is known"""
+    ``x + 100 * y`` (plus `offset`), so that the mean over a rectangle is known. With `channels` colors the channel c is
+    this image plus ``1000 * c``"""
 
-    def __init__(self, title='Camera1', delay=10, width=120, height=80, exposure=True):
+    def __init__(self, title='Camera1', delay=10, width=120, height=80, exposure=True, channels=1):
         super().__init__(title, delay=delay, integration=False)
         self.width, self.height = width, height
+        self.channels = channels
         if exposure:
             self.settings = Parameter.create(name='settings', type='group', children=[
                 {'name': 'camera_settings', 'type': 'group', 'children': [
@@ -93,7 +95,9 @@ class FakeCamera(FakeDetector):
             return
         if self.silent or not self.initialized_state:
             return
-        dwa = DataRaw('image', data=[self.image()], labels=['intensity'])
+        image = self.image()
+        dwa = DataRaw('image', data=[image + 1000. * channel for channel in range(self.channels)],
+                      labels=['intensity'] if self.channels == 1 else None)
         self.grab_done_signal.emit(DataToExport(self.title, data=[dwa]))
 
 

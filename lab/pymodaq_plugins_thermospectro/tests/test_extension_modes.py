@@ -484,3 +484,142 @@ class TestFullSpectraDividedByTheIntegrationTime:
         assert np.allclose(spectra('as_saved', 1), spectra('divided', 1), rtol=1e-4, atol=1e-9)  # (it was divided already)
         assert np.allclose(spectra('as_saved', 2) / 20., spectra('divided', 2), rtol=1e-4, atol=1e-9)  # (this one was not)
         assert 'divided by the integration time when they were measured' in capsys.readouterr().err
+
+
+def set_mock_colors(unit, n):
+    """The Mock camera gives `n` channels (copies of its image: what is measured on each one is the same)"""
+    from pymodaq_plugins_thermospectro.spectrometers import _walk
+    next(param for param in _walk(unit.detector.settings) if param.name() == 'Nimagescolor').setValue(n)
+
+
+@pytest.mark.parametrize('dashboard', ['camera_only'], indirect=True)
+class TestChannelsOfACamera:
+    """A camera and its thermostat alone: ROIs of 8 x 8 pixels on the image of 100 x 200 pixels of the Mock camera"""
+
+    def color_camera(self, qtbot, ext, n=3):
+        set_mock_colors(ext.unit(3), n)
+        ext.start_monitoring()
+        wait_for(qtbot, lambda: ext.unit(3).n_channels == n and ext.view(3).manager.n_channels == n, timeout=20000)
+
+    def test_a_gray_camera_has_no_boxes_to_tick(self, ext, qtbot):
+        ext.start_monitoring()
+        wait_for(qtbot, lambda: ext.unit(3).spectrum is not None)
+        qtbot.wait(600)
+
+        manager = ext.view(3).manager
+        assert ext.unit(3).n_channels == 1 and manager.n_channels == 0
+        assert all(manager.row(key).channel_boxes == [] for key in manager.keys)
+        assert not manager._labels['channels'].isVisibleTo(manager)
+        assert not ext.unit(3).settings.child('rois', 'roi00', 'channels').opts['visible']
+        ext.stop_monitoring()
+
+    def test_a_color_camera_has_a_box_for_each_channel(self, ext, qtbot):
+        self.color_camera(qtbot, ext)
+
+        manager = ext.view(3).manager
+        assert manager._labels['channels'].isVisibleTo(manager)
+        for key in manager.keys:
+            assert [box.text() for box in manager.row(key).channel_boxes] == ['R', 'G', 'B']
+            assert all(box.isChecked() for box in manager.row(key).channel_boxes)  # (all of them by default)
+        assert ext.unit(3).settings.child('rois', 'roi00', 'channels').opts['visible']
+        ext.stop_monitoring()
+
+    def test_the_boxes_say_what_several_channels_do_when_the_mouse_is_over_them(self, ext, qtbot):
+        self.color_camera(qtbot, ext)
+
+        tip = ext.view(3).manager.row('roi00').channel_boxes[1].toolTip()
+
+        assert tip.startswith('Green channel') and 'averaged' in tip and 'mean of std(green) and std(blue)' in tip
+        ext.stop_monitoring()
+
+    def test_ticking_the_boxes_changes_the_settings_of_the_roi(self, ext, qtbot):
+        self.color_camera(qtbot, ext)
+
+        ext.view(3).manager.row('roi00').channel_boxes[0].setChecked(False)  # (the red one)
+
+        settings = ext.unit(3).settings
+        assert settings.child('rois', 'roi00', 'channels').value() == '2, 3'
+        assert settings.roi('roi00').channels == (1, 2) and settings.roi('roi01').channels is None
+        assert len(ext.unit(3).series_rois) < 3  # (the curve was not of these channels: it starts again)
+        ext.stop_monitoring()
+
+    def test_the_settings_show_the_boxes_too(self, ext, qtbot):
+        self.color_camera(qtbot, ext)
+
+        ext.unit(3).settings.child('rois', 'roi01', 'channels').setValue('blue')
+
+        assert [box.isChecked() for box in ext.view(3).manager.row('roi01').channel_boxes] == [False, False, True]
+        ext.stop_monitoring()
+
+    def test_the_choice_is_remembered_with_the_rois(self, ext, qtbot, tmp_path):
+        self.color_camera(qtbot, ext)
+        ext.view(3).manager.row('roi01').channel_boxes[0].setChecked(False)
+        ext.save_rois()
+
+        saved = json.loads((tmp_path / 'remembered' / 'rois.json').read_text())['units']['unit3']['rois']
+
+        assert [roi.get('channels') for roi in saved][:3] == [None, [1, 2], None]
+        ext.stop_monitoring()
+
+    def test_the_boxes_cannot_be_changed_during_an_experiment(self, ext, qtbot):
+        self.color_camera(qtbot, ext)
+        ext.stop_monitoring()
+        run(qtbot, ext, **SLOW)
+        try:
+            row = ext.view(3).manager.row('roi00')
+            assert not any(box.isEnabled() for box in row.channel_boxes)
+            assert not ui_enabled(ext.unit(3).settings.child('rois', 'roi00', 'channels'))
+        finally:
+            end_run(qtbot, ext)
+        assert all(box.isEnabled() for box in ext.view(3).manager.row('roi00').channel_boxes)
+
+    def test_an_experiment_saves_which_channels_the_values_are_measured_on(self, ext, qtbot, tmp_path):
+        self.color_camera(qtbot, ext)
+        manager = ext.view(3).manager
+        manager.row('roi00').aggregation.setCurrentIndex(MODES.index('std'))
+        manager.row('roi00').aggregation.activated.emit(MODES.index('std'))
+        manager.row('roi00').channel_boxes[0].setChecked(False)  # (green and blue)
+        ext.stop_monitoring()
+
+        run(qtbot, ext, **SLOW)
+        wait_for(qtbot, lambda: ext.unit(3).n_measurements >= 4)
+        end_run(qtbot, ext)
+
+        with H5Experiment(tmp_path) as experiment:
+            labels = [experiment.label('Unit3_ROIs', index) for index in range(experiment.n_zero_d('Unit3_ROIs'))]
+            assert labels[0] == 'ROI 1 std green+blue (x 10-18, y 5-13 pixel)'
+            assert labels[1] == 'ROI 2 mean (x 20-28, y 10-18 pixel)'  # (all the channels)
+            assert int(experiment.attribute('Unit3_ROIs', 'n_channels')) == 3
+            saved = json.loads(experiment.attribute('Unit3_ROIs', 'rois'))
+            assert saved[0]['channels'] == [1, 2] and 'channels' not in saved[1]
+
+    def test_the_converter_says_which_channels(self, ext, qtbot, tmp_path):
+        self.color_camera(qtbot, ext)
+        ext.view(3).manager.row('roi02').channel_boxes[0].setChecked(False)
+        ext.view(3).manager.row('roi02').channel_boxes[1].setChecked(False)  # (blue only)
+        ext.stop_monitoring()
+        run(qtbot, ext, **SLOW)
+        wait_for(qtbot, lambda: ext.unit(3).n_measurements >= 4)
+        end_run(qtbot, ext)
+        path = next((tmp_path / 'data').rglob('*.h5'))
+
+        assert export.main([str(path), '-o', str(tmp_path / 'out')]) == 0
+
+        out = tmp_path / 'out'
+        header = read_csv(out / f'{path.stem}_camera.csv')[0]
+        assert any(name.startswith('ROI 3 mean blue (x 30-38') for name in header)
+        text = (out / f'{path.stem}_experiment.txt').read_text(encoding='utf-8-sig')
+        assert 'ROI 3: mean of the pixels in x 30-38, y 15-23 pixel, on the blue channel' in text
+        assert 'ROI 1: mean of the pixels in x 10-18, y 5-13 pixel, on all 3 channels (the results are averaged)' in text
+
+    def test_a_gray_camera_which_replaces_a_color_one_gives_all_the_channels_back(self, ext, qtbot):
+        self.color_camera(qtbot, ext)
+        ext.unit(3).settings.child('rois', 'roi00', 'channels').setValue('3')
+        assert ext.unit(3).settings.roi('roi00').channels == (2,)
+
+        set_mock_colors(ext.unit(3), 1)
+        wait_for(qtbot, lambda: ext.unit(3).n_channels == 1 and ext.view(3).manager.n_channels == 0, timeout=20000)
+
+        assert ext.unit(3).settings.child('rois', 'roi00', 'channels').value() == 'all'
+        assert ext.unit(3).settings.roi('roi00').channels is None
+        ext.stop_monitoring()

@@ -199,6 +199,16 @@ axis of the curves says what they are (the legend adds it when they are not all 
 the image: the experiment does not start if one is outside, and says which. A ROI gives one thing: to have a ROI both as a
 number and as a crop, make two ROIs of the same rectangle. The *Value* of the ROIs is remembered with them.
 
+**The channels of a camera which gives colors.** Its images have several channels (shown as red, green and blue, in this
+order). Each ROI which gives a number has a box for each channel in the ROI manager (the column *Channels*: R, G, B) and a
+*Channels* setting (``all``, or the numbers counted from 1: ``2, 3``): tick the channels it is measured on, all of them by
+default. If two channels or more are ticked, the operation (mean, sum, median, min, max or std) is done on each of them and
+**the results are averaged**: with green and blue ticked and *std*, the value of the ROI is the mean of std(green) and
+std(blue), not the standard deviation of their pixels together. At least one channel stays ticked. A camera with one channel has
+no such boxes, and a crop keeps all the channels. The choice is remembered with the ROIs, cannot be changed during an experiment,
+and the label of the value in the file says which channels when it is not all of them (``ROI 1 std green+blue (x 10-18, y 5-13
+pixel)``); ``lab_export`` says it in its text too. Move the mouse over the boxes to read it.
+
 The full image is not recorded by default (it is megabytes): tick *The full image* under *Record to disk*, and say
 how often with *Full image every*. The groups of the file are ``Unit3_Image``, ``Unit3_ROIs`` (the ROIs which are numbers),
 ``Unit3_Crop1``, ``Unit3_Crop2``... (the ROIs which are crops), ``Unit3_Integration``, ``Unit3_Temperature`` and
@@ -357,8 +367,9 @@ their title (``Detector000``, ``Actuator000``... only number them):
 ``Unit1_Spectrum``     the full spectra, with their wavelengths (*Unit2_...* for the second spectrometer), every
                        *Full spectrum every* seconds (``Unit3_Image``: the images of the camera)
 ``Unit1_ROIs``         one array per recorded ROI which gives a number, labeled like ``ROI 1 mean (454.2-464.6 nm)`` (``ROI 1 sum
-                       (x 10-18, y 5-13 pixel)`` for a camera), in the unit of the values (``units`` of the arrays,
-                       ``values_units`` of the group)
+                       (x 10-18, y 5-13 pixel)`` for a camera, ``ROI 1 std green+blue (x 10-18, y 5-13 pixel)`` when it is
+                       measured on some of the channels only, the attribute ``n_channels`` telling how many there are), in the
+                       unit of the values (``units`` of the arrays, ``values_units`` of the group)
 ``Unit1_Crop1``...     for each ROI which is a crop: the part of the spectrum of a spectrometer, with its wavelengths, or the
                        pixels of a camera (one image, or several channels, per readout), with the name and the window of the
                        ROI in the attribute ``roi``

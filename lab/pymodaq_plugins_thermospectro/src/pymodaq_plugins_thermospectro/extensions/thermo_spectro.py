@@ -154,6 +154,8 @@ class ThermoSpectro(CustomExt):
             unit.notice.connect(self.status_signal.emit)
             unit.problem.connect(self._on_unit_problem)
             unit.axis_units_changed.connect(lambda units, u=unit: self._on_axis_units(u, units))
+            if isinstance(unit, CameraUnit):
+                unit.channels_changed.connect(lambda n, u=unit: self._on_channels(u, n))
             self.units.append(unit)
         self.views = [(CameraView if isinstance(unit, CameraUnit) else UnitView)(unit, parent=self)
                       for unit in self.units]
@@ -414,8 +416,8 @@ class ThermoSpectro(CustomExt):
             self._rois_changed(unit)
         elif kind in ('roi_record', 'roi_plot'):
             self._rois_changed(unit)
-        elif kind == 'roi_aggregation':  # (what the curve of the ROI shows is not the same any more: it starts again)
-            self._rois_changed(unit, reset=True)
+        elif kind in ('roi_aggregation', 'roi_channels'):
+            self._rois_changed(unit, reset=True)  # (what the curve of the ROI shows is not the same any more: it starts again)
 
     def child_added(self, param: Parameter, data):
         for unit in self.units:
@@ -820,6 +822,12 @@ class ThermoSpectro(CustomExt):
             self._rois_changed(unit, reset=True)  # (the default ROIs are made for another size of image)
         self.view(unit.number).update_definitions()
 
+    def _on_channels(self, unit: CameraUnit, n: int):
+        """The images of a camera have this many channels: the ROIs show which ones they are measured on if there are several
+        (and the one which asked for channels the images do not have are measured on all of them)"""
+        changed = unit.settings.set_channel_count(n)
+        self._rois_changed(unit, reset=changed)
+
     def _modules_changed(self, unit: Unit):
         """The modules selected for a unit changed"""
         unit.attach()
@@ -1010,8 +1018,8 @@ class ThermoSpectro(CustomExt):
             self.add_roi(number, position, y)
 
     def _on_roi_field_edited(self, number: int, key: str, field: str, value):
-        """The user changed the name, the *Value* or the *Record* box of a ROI in the ROI manager: its settings follow
-        (and the settings do the rest, as when they are edited by hand)"""
+        """The user changed the name, the *Value*, the *Channels* or the *Record* box of a ROI in the ROI manager: its settings
+        follow (and the settings do the rest, as when they are edited by hand)"""
         unit = self.unit(number)
         if self._run_active or key not in unit.settings.roi_keys:
             return

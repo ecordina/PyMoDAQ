@@ -66,8 +66,12 @@ def roi_definition(key: str, roi: Roi, units: str = 'nm') -> dict:
     ]}
 
 
-def rect_roi_definition(key: str, roi: RectRoi, units: str = camera.UNITS) -> dict:
-    """The parameter of the ROI of a camera (its edges are in pixels: x along the columns, y along the rows)"""
+def rect_roi_definition(key: str, roi: RectRoi, units: str = camera.UNITS, n_channels: int = 0) -> dict:
+    """The parameter of the ROI of a camera (its edges are in pixels: x along the columns, y along the rows)
+
+    `n_channels` is the number of channels of its images, 0 if it is not known yet: the choice of the channels is only shown
+    for several.
+    """
     return {'title': roi.name, 'name': key, 'type': 'group', 'removable': True, 'children': [
         {'title': 'Name:', 'name': 'name', 'type': 'str', 'value': roi.name},
         {'title': 'From x:', 'name': 'x0', 'type': 'float', 'value': float(roi.x0), 'suffix': units,
@@ -81,6 +85,10 @@ def rect_roi_definition(key: str, roi: RectRoi, units: str = camera.UNITS) -> di
          'tip': 'What this ROI gives at each measurement: one number made of its pixels (mean, sum, median, min, max '
                 'or std: the standard deviation), plotted and saved in the csv file with the others, or "crop": its '
                 'pixels themselves, saved as images (a tif file of their own), with nothing to plot'},
+        {'title': 'Channels:', 'name': 'channels', 'type': 'str', 'value': camera.format_channels(roi.channels),
+         'visible': n_channels > 1,
+         'tip': 'The channels of the image this ROI is measured on (only for a camera which gives several): "all", or '
+                'their numbers counted from 1 (1 = red, 2 = green, 3 = blue), "2, 3" for instance. ' + camera.CHANNELS_RULE},
         {'title': 'Record:', 'name': 'record', 'type': 'bool', 'value': bool(roi.record),
          'tip': 'Save this ROI at each measurement: its value, or its pixels if it is a crop'},
         {'title': 'Plot:', 'name': 'plot', 'type': 'bool', 'value': bool(roi.plot),
@@ -722,7 +730,7 @@ class UnitSettings:
             None if the parameter is not one of this unit, or the program is changing it itself. The kinds are
             ``enabled``, ``modules``, ``integration``, ``readout``, ``units`` (key: the intensity unit or the division by
             the integration time), ``record``, ``plot_temperature``, ``ramp`` (key: the name of the field) and, for the ROIs (key: the name of the ROI) ``roi_edges``, ``roi_name``, ``roi_record``,
-            ``roi_plot``, ``roi_aggregation``
+            ``roi_plot``, ``roi_aggregation``, ``roi_channels``
         """
         if self.is_busy:
             return None
@@ -734,7 +742,7 @@ class UnitSettings:
             return None
         if path[0] == 'rois' and len(path) == 3 and ROI_NAME.match(path[1]):
             kind = {**{edge: 'roi_edges' for edge in self.EDGES}, 'name': 'roi_name', 'record': 'roi_record',
-                    'plot': 'roi_plot', 'aggregation': 'roi_aggregation'}.get(path[2])
+                    'plot': 'roi_plot', 'aggregation': 'roi_aggregation', 'channels': 'roi_channels'}.get(path[2])
             return (kind, path[1]) if kind else None
         head = path[0]
         if head in ('enabled', 'plot_temperature'):
@@ -790,17 +798,48 @@ class CameraSettings(UnitSettings):
     def __init__(self, param: Parameter, number: int):
         super().__init__(param, number)
         self.axis_units = camera.UNITS
+        #: How many channels the images have (0 until the first one comes)
+        self.n_channels = 0
 
     def roi(self, key: str) -> RectRoi:
         group = self.param.child('rois', key)
         x0, x1 = sorted((float(group['x0']), float(group['x1'])))
         y0, y1 = sorted((float(group['y0']), float(group['y1'])))
         aggregation = str(group['aggregation']) if 'aggregation' in group.names else camera.DEFAULT_AGGREGATION
+        channels = camera.parse_channels(group['channels']) if 'channels' in group.names else None
+        if self.n_channels > 0:  # (until the first image comes what was asked for is kept: it is remembered)
+            channels = camera.fit_channels(channels, self.n_channels)
         return RectRoi(str(group['name']), x0, x1, y0, y1, bool(group['record']), bool(group['plot']),
-                       aggregation if aggregation in camera.MODES else camera.DEFAULT_AGGREGATION)
+                       aggregation if aggregation in camera.MODES else camera.DEFAULT_AGGREGATION, channels)
 
     def roi_definition(self, key: str, roi) -> dict:
-        return rect_roi_definition(key, roi, self.axis_units)
+        return rect_roi_definition(key, roi, self.axis_units, self.n_channels)
+
+    def set_channel_count(self, n: int) -> bool:
+        """The images of the camera have `n` channels
+
+        The choice of the channels of the ROIs is shown if there are several, and a ROI which asked for channels the images do
+        not have is measured on all of them (and says so).
+
+        Returns
+        -------
+        bool
+            True if the choice of a ROI changed
+        """
+        self.n_channels = max(1, int(n))
+        changed = False
+        with self.busy():
+            for key in self.roi_keys:
+                group = self.param.child('rois', key)
+                if 'channels' not in group.names:  # (settings loaded from a file made before it existed)
+                    continue
+                leaf = group.child('channels')
+                leaf.setOpts(visible=self.n_channels > 1)
+                text = camera.format_channels(camera.fit_channels(camera.parse_channels(leaf.value()), self.n_channels))
+                if text != leaf.value():
+                    leaf.setValue(text)
+                    changed = True
+        return changed
 
     def set_roi_edges(self, key: str, x0: float, x1: float, y0: float, y1: float):
         with self.busy():

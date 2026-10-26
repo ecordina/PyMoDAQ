@@ -319,6 +319,8 @@ class CameraView(UnitView):
 
     def _connect_manager(self):
         self.manager.edges_edited.connect(lambda key, *edges: self.rect_edited.emit(self.number, key, *edges))
+        self.manager.channels_edited.connect(
+            lambda key, channels: self.roi_field_edited.emit(self.number, key, 'channels', channels))
 
     def _update_roi_widgets(self, keys, rois):
         plot = self.spectrum_plot
@@ -345,5 +347,6 @@ class CameraView(UnitView):
         else:
             before = self.spectrum_plot.shape
             self.spectrum_plot.set_image(frame.y, frame.dwa.data, frame.dwa.labels)
+            self.manager.set_channels(frame.n_channels)  # (the boxes of the channels: only for a color camera)
             if self.spectrum_plot.shape != before:  # the rectangles could not know the size of the image before
                 self.update_definitions()

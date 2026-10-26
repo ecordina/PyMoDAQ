@@ -137,6 +137,11 @@ the same ones), which are fitted to the size of the image when the first image c
   legend adds the value when they differ. A crop must be inside the image (otherwise the experiment does not start); the
   *Value* is remembered with the ROIs and cannot be changed during an experiment. A ROI gives one thing: for a number and a crop
   of the same rectangle, make two ROIs;
+* a camera which gives colors (several channels, shown as red, green and blue) has the boxes **R G B** for each ROI in the ROI
+  manager (and a *Channels* setting): the channels the ROI is measured on, all of them by default. With two or more ticked, the
+  operation is done on each channel and **the results are averaged**: with green and blue ticked and *std*, the ROI gives the mean
+  of std(green) and std(blue). Move the mouse over the boxes to read it. There are no boxes for a camera with one channel, a
+  crop keeps all the channels, and the labels in the file say which channels when it is not all of them;
 * the image is drawn small, with a numbered rectangle for each ROI: **drag a rectangle** to move it, **drag its
   corner** to resize it, **double click** (or right click) on the image to add a ROI there, right click on a
   rectangle to delete it;

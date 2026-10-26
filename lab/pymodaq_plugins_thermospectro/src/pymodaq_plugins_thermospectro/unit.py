@@ -924,10 +924,19 @@ class CameraUnit(Unit):
     """A camera and its thermostat: the unit of a spectrometer, with images instead of spectra
 
     Each readout takes one image; the value of each ROI is an aggregation (the mean, by default) of the pixels inside its
-    rectangle, or, if it is a crop, it has none: its pixels are saved (see :mod:`.camera`). The ramp, the
-    thermostat, the watchdogs and the recording work as in :class:`Unit`: the last image is :attr:`spectrum` (a
-    :class:`~.camera.Frame`), what the two kinds of unit have in common keeps the same names.
+    rectangle (of the channels of the image it is told to measure: the results of the channels are averaged), or, if it is a
+    crop, it has none: its pixels are saved (see :mod:`.camera`). The ramp, the thermostat, the watchdogs and the recording
+    work as in :class:`Unit`: the last image is :attr:`spectrum` (a :class:`~.camera.Frame`), what the two kinds of unit have
+    in common keeps the same names.
+
+    Attributes
+    ----------
+    channels_changed: Signal(int)
+        The images have not the same number of channels as before (it is emitted with the first image): the settings of the
+        ROIs and the ROI manager show the choice of the channels if there are several
     """
+    channels_changed = QtCore.Signal(int)
+    _n_channels = 0  # (how many channels the last image had: 0 before the first one)
     WHAT = 'camera'
     DATA = 'image'
     DIMENSION = '2D'
@@ -947,13 +956,23 @@ class CameraUnit(Unit):
         if not self._axis_known:
             self.axis_units, self._axis_known = PIXELS, True
             self.axis_units_changed.emit(PIXELS)
+        n = self.spectrum.n_channels
+        if n != self._n_channels:  # (before the ROIs are measured: they are given what is left of their channels)
+            self._n_channels = n
+            self.channels_changed.emit(n)
         return True
+
+    @property
+    def n_channels(self) -> int:
+        """How many channels the last image had (1 until the first one comes)"""
+        return max(self._n_channels, 1)
 
     def _roi_values(self, rois) -> list[float]:
         values = []
         image = self.spectrum.y
+        channels = self.spectrum.channels  # (a ROI cuts its pixels out of each channel: nothing is converted)
         for roi in rois:
-            value = roi.value(image)
+            value = roi.value(channels)
             if roi.is_crop:  # (no value: its pixels are saved)
                 values.append(value)
                 continue

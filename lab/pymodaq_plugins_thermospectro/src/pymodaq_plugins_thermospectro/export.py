@@ -445,6 +445,24 @@ def started_at(file) -> str:
         return ''
 
 
+def channel_words(channels) -> str:
+    """``green and blue``: the channels of an image (counted from 0) as they are called in the text"""
+    names = [CHANNEL_COLORS[index] if 0 <= index < len(CHANNEL_COLORS) else f'ch{index + 1}'
+             for index in sorted(int(index) for index in channels)]
+    return ' and '.join(names) if len(names) < 3 else ', '.join(names[:-1]) + ' and ' + names[-1]
+
+
+def which_channels(roi: dict, n_channels: int) -> str:
+    """What the text says of the channels a ROI of a camera was measured on, if the images have several: ``, on the green
+    and blue channels (the results are averaged)``"""
+    chosen = roi.get('channels')
+    if chosen:
+        return f', on the {channel_words(chosen)} channel' + ('s (the results are averaged)' if len(chosen) > 1 else '')
+    if n_channels > 1:
+        return f', on all {n_channels} channels (the results are averaged)'
+    return ''
+
+
 def roi_lines(unit: UnitData, files: dict[str, str]) -> list[str]:
     """What each ROI of a unit is, one line each (`files`: the tif file of each crop, by the name of the ROI)"""
     series = unit.series.get('ROIs')
@@ -453,12 +471,16 @@ def roi_lines(unit: UnitData, files: dict[str, str]) -> list[str]:
         recorded = json.loads(series.attrs['rois']) if series is not None and 'rois' in series.attrs else []
     except (TypeError, ValueError):
         recorded = []
+    try:
+        n_channels = int(series.attrs.get('n_channels', 0)) if series is not None else 0
+    except (TypeError, ValueError):
+        n_channels = 0
     for roi in recorded:
         name = roi.get('name', '')
         what = AGGREGATION_WORDS.get(roi.get('aggregation', 'mean'), 'mean')
         if 'x0' in roi:
             lines.append(f'    {name}: {what} of the pixels in x {roi["x0"]:g}-{roi["x1"]:g}, y {roi["y0"]:g}-{roi["y1"]:g} '
-                         f'pixel')
+                         f'pixel{which_channels(roi, n_channels)}')
         else:
             lines.append(f'    {name}: {what} of the pixels in {roi.get("start", 0):g}-{roi.get("stop", 0):g} nm')
     for crop in unit.crops:

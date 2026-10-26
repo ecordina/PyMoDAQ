@@ -263,6 +263,9 @@ class UnitRecording:
         In ms and s, saved as attributes of the groups of the unit
     spectrometer, thermostat: str
         The titles of the modules, saved as attributes
+    n_channels: int
+        How many channels the images of a camera have (the ROIs which give a number are measured on some of them, see
+        :class:`~.camera.RectRoi`): saved as an attribute of their group
     """
     number: int
     spectrum: bool = True
@@ -287,6 +290,7 @@ class UnitRecording:
     per_integration: bool = False
     spectrum_units: str = DEFAULT_INTENSITY_UNITS
     spectrum_per_integration: bool = False
+    n_channels: int = 1
 
     @classmethod
     def from_unit(cls, unit) -> 'UnitRecording':
@@ -312,7 +316,8 @@ class UnitRecording:
                    main=IMAGE if settings.KIND == 'camera' else SPECTRUM, detector_kind=settings.KIND, crops=crops,
                    integration=settings.record_integration, intensity_units=settings.intensity_units,
                    value_units=settings.value_units, per_integration=settings.per_integration,
-                   spectrum_units=settings.spectrum_units, spectrum_per_integration=settings.spectrum_per_integration)
+                   spectrum_units=settings.spectrum_units, spectrum_per_integration=settings.spectrum_per_integration,
+                   n_channels=getattr(unit, 'n_channels', 1))
 
     @staticmethod
     def _check_crops(unit, crops: list):
@@ -609,6 +614,8 @@ class ThermoSpectroSaver(ExtensionSaver):
                 h5saver.set_attr(node, 'rois', json.dumps(
                     [{key: value for key, value in roi.to_dict().items() if key not in ('record', 'plot')}
                      for roi in recording.rois]))
+                if recording.detector_kind == 'camera':  # (the channels the ROIs are measured on are counted from 0)
+                    h5saver.set_attr(node, 'n_channels', int(recording.n_channels))
             if what in (ROIS, SPECTRUM, IMAGE, *crops):
                 h5saver.set_attr(node, 'intensity_units', recording.intensity_units)
             if what == ROIS:
