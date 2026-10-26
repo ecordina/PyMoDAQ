@@ -112,11 +112,11 @@ class TestChangedWhileItRuns:
 class TestDividedByTheIntegrationTime:
     def test_the_plot_says_the_values_are_per_ms(self, ext):
         axis = ext.view(1).curves_plot.getPlotItem().getAxis('left')
-        assert axis.labelUnits == 'counts'
+        assert axis.labelUnits == 'A.U.'
 
         ext.unit(1).settings.child('per_integration').setValue(True)
 
-        assert axis.labelUnits == 'counts/ms'
+        assert axis.labelUnits == 'A.U./ms'
         ext.unit(1).settings.child('intensity_units').setValue('V')
         assert axis.labelUnits == 'V/ms'
 
@@ -141,7 +141,7 @@ class TestDividedByTheIntegrationTime:
         with H5Experiment(tmp_path) as experiment:
             assert experiment.attribute('Unit1_ROIs', 'values_units') == 'counts/ms'
             assert experiment.attribute('Unit1_ROIs', 'per_integration') in (True, 'True')
-            assert experiment.attribute('Unit2_ROIs', 'values_units') == 'counts'  # (the other unit was not divided)
+            assert experiment.attribute('Unit2_ROIs', 'values_units') == 'A.U.'  # (the other unit: not divided, default unit)
             assert str(experiment.attribute('Unit1_Spectrum', 'intensity_units')) == 'counts'
 
     def test_the_options_cannot_be_changed_while_it_runs(self, ext, qtbot):
@@ -443,11 +443,11 @@ class TestFullSpectraDividedByTheIntegrationTime:
 
         with H5Experiment(tmp_path) as experiment:
             for title in ('Unit1_Spectrum', 'Unit1_Crop1'):
-                assert experiment.attribute(title, 'values_units') == 'counts/ms'
+                assert experiment.attribute(title, 'values_units') == 'A.U./ms'
                 assert experiment.attribute(title, 'per_integration') in (True, 'True')
-                assert experiment.attribute(title, 'intensity_units') == 'counts'
-            assert experiment.attribute('Unit1_ROIs', 'values_units') == 'counts'  # (the values of the ROIs: the other option)
-            assert experiment.attribute('Unit2_Spectrum', 'values_units') == 'counts'  # (the other spectrometer)
+                assert experiment.attribute(title, 'intensity_units') == 'A.U.'
+            assert experiment.attribute('Unit1_ROIs', 'values_units') == 'A.U.'  # (the values of the ROIs: the other option)
+            assert experiment.attribute('Unit2_Spectrum', 'values_units') == 'A.U.'  # (the other spectrometer)
 
     def test_the_values_of_the_rois_follow_their_own_option(self, ext, qtbot, tmp_path):
         record_integration(ext)
@@ -459,10 +459,10 @@ class TestFullSpectraDividedByTheIntegrationTime:
         end_run(qtbot, ext)
 
         with H5Experiment(tmp_path) as experiment:
-            assert experiment.attribute('Unit1_ROIs', 'values_units') == 'counts/ms'
-            assert experiment.attribute('Unit1_Spectrum', 'values_units') == 'counts'
-            assert experiment.attribute('Unit2_ROIs', 'values_units') == 'counts'
-            assert experiment.attribute('Unit2_Spectrum', 'values_units') == 'counts/ms'
+            assert experiment.attribute('Unit1_ROIs', 'values_units') == 'A.U./ms'
+            assert experiment.attribute('Unit1_Spectrum', 'values_units') == 'A.U.'
+            assert experiment.attribute('Unit2_ROIs', 'values_units') == 'A.U.'
+            assert experiment.attribute('Unit2_Spectrum', 'values_units') == 'A.U./ms'
 
     def test_the_converter_does_not_divide_a_second_time(self, ext, qtbot, tmp_path, capsys):
         record_integration(ext)

@@ -183,7 +183,7 @@ class TestSpectrometerCsv:
         out = run_export(path, tmp_path)
 
         header, rows = read_csv(out / f'{path.stem}_spectrometer1.csv')
-        assert header == ['time (s)', 'temperature (°C)', 'A mean (500-510 nm) [counts]', 'B mean (600-610 nm) [counts]']
+        assert header == ['time (s)', 'temperature (°C)', 'A mean (500-510 nm) [A.U.]', 'B mean (600-610 nm) [A.U.]']
         assert len(rows) == 6
         assert [row[0] for row in rows] == pytest.approx([0., 1., 2., 3., 4., 5.])  # (from the start of the experiment)
         assert [row[1] for row in rows] == pytest.approx([20., 21., 22., 23., 24., 25.])
@@ -227,7 +227,7 @@ class TestSpectrometerCsv:
         out = run_export(path, tmp_path)
 
         header, _ = read_csv(out / f'{path.stem}_spectrometer1.csv')
-        assert header[-1] == 'B mean (600-610 nm) [counts]'
+        assert header[-1] == 'B mean (600-610 nm) [A.U.]'
         assert not list(out.glob('*spectra*'))
 
     def test_only_the_spectra_were_recorded(self, h5saver, qapp, tmp_path):
@@ -249,7 +249,7 @@ class TestSpectrometerCsv:
         out = run_export(path, tmp_path, '--short-names', '--absolute-time', '--program', '--no-spectra')
 
         header, rows = read_csv(out / f'{path.stem}_spectrometer1.csv')
-        assert header[:4] == ['time (epoch s)', 'temperature (°C)', 'A mean [counts]', 'B mean [counts]']
+        assert header[:4] == ['time (epoch s)', 'temperature (°C)', 'A mean [A.U.]', 'B mean [A.U.]']
         assert rows[0][0] == pytest.approx(1000.) and rows[5][0] == pytest.approx(1005.)
 
     def test_the_program_columns(self, h5saver, qapp, tmp_path):
@@ -275,7 +275,7 @@ class TestSpectrometerCsv:
         out = run_export(experiment.path, tmp_path, '--no-spectra')
 
         header, _ = read_csv(out / f'{experiment.path.stem}_spectrometer1.csv')
-        assert header == ['time (s)', 'A mean (500-510 nm) [counts]']
+        assert header == ['time (s)', 'A mean (500-510 nm) [A.U.]']
 
     def test_two_spectrometers_two_files(self, h5saver, qapp, tmp_path):
         units = [make_unit(1, rois=[Roi('A', 500., 510.)]), make_unit(2, rois=[Roi('B', 600., 610.)])]
@@ -287,8 +287,8 @@ class TestSpectrometerCsv:
 
         out = run_export(experiment.path, tmp_path, '--no-spectra')
 
-        assert read_csv(out / f'{experiment.path.stem}_spectrometer1.csv')[0][2] == 'A mean (500-510 nm) [counts]'
-        assert read_csv(out / f'{experiment.path.stem}_spectrometer2.csv')[0][2] == 'B mean (600-610 nm) [counts]'
+        assert read_csv(out / f'{experiment.path.stem}_spectrometer1.csv')[0][2] == 'A mean (500-510 nm) [A.U.]'
+        assert read_csv(out / f'{experiment.path.stem}_spectrometer2.csv')[0][2] == 'B mean (600-610 nm) [A.U.]'
 
     def test_the_csv_opens_in_excel_with_the_degree_sign(self, h5saver, qapp, tmp_path):
         path = write_experiment(h5saver, camera=False)
@@ -304,7 +304,7 @@ class TestSpectrometerCsv:
         out = run_export(path, tmp_path, '--delimiter', ';', '--no-spectra')
 
         first = (out / f'{path.stem}_spectrometer1.csv').read_text(encoding='utf-8-sig').splitlines()[0]
-        assert first == 'time (s);temperature (°C);A mean (500-510 nm) [counts];B mean (600-610 nm) [counts]'
+        assert first == 'time (s);temperature (°C);A mean (500-510 nm) [A.U.];B mean (600-610 nm) [A.U.]'
 
     def test_the_files_go_next_to_the_h5_file_by_default(self, h5saver, qapp):
         path = write_experiment(h5saver, camera=False)
@@ -340,8 +340,8 @@ class TestIntegrationTime:
         out = run_export(path, tmp_path)
 
         header, rows = read_csv(out / f'{path.stem}_spectrometer1.csv')
-        assert header == ['time (s)', 'temperature (°C)', 'integration time (ms)', 'A mean (500-510 nm) [counts]',
-                          'B mean (600-610 nm) [counts]']
+        assert header == ['time (s)', 'temperature (°C)', 'integration time (ms)', 'A mean (500-510 nm) [A.U.]',
+                          'B mean (600-610 nm) [A.U.]']
         assert [row[2] for row in rows] == [100., 200., 300., 400., 500., 600.]
 
     def test_it_is_in_the_file_of_the_spectra_too(self, h5saver, qapp, tmp_path):
@@ -359,7 +359,7 @@ class TestIntegrationTime:
         out = run_export(path, tmp_path, '--per-integration-time')
 
         header, rows = read_csv(out / f'{path.stem}_spectrometer1.csv')
-        assert header[3:] == ['A mean (500-510 nm) [counts/ms]', 'B mean (600-610 nm) [counts/ms]']
+        assert header[3:] == ['A mean (500-510 nm) [A.U./ms]', 'B mean (600-610 nm) [A.U./ms]']
         assert [row[3] for row in rows] == pytest.approx([0., 100. / 200., 200. / 300., 300. / 400., 400. / 500.,
                                                           500. / 600.])
         assert [row[4] for row in rows] == pytest.approx([1. / 100., 101. / 200., 201. / 300., 301. / 400.,
@@ -380,7 +380,7 @@ class TestIntegrationTime:
         out = run_export(path, tmp_path, '--per-integration-time')
 
         header, rows = read_csv(out / f'{path.stem}_spectrometer1.csv')
-        assert header[3] == 'A mean (500-510 nm) [counts/ms]'  # (the units the file says)
+        assert header[3] == 'A mean (500-510 nm) [A.U./ms]'  # (the units the file says)
         assert [row[3] for row in rows] == pytest.approx([0., 100., 200., 300., 400., 500.])  # (not divided again)
         assert 'divided by the integration time when they were measured' in capsys.readouterr().err
 
@@ -390,7 +390,7 @@ class TestIntegrationTime:
         out = run_export(path, tmp_path, '--per-integration-time')
 
         header, rows = read_csv(out / f'{path.stem}_spectrometer1.csv')
-        assert header[2] == 'A mean (500-510 nm) [counts]' and rows[1][2] == pytest.approx(100.)
+        assert header[2] == 'A mean (500-510 nm) [A.U.]' and rows[1][2] == pytest.approx(100.)
         assert 'no integration time was saved' in capsys.readouterr().err
 
     def test_the_camera_has_its_exposure_time_and_its_values_can_be_divided(self, h5saver, qapp, tmp_path):
@@ -400,7 +400,7 @@ class TestIntegrationTime:
 
         header, rows = read_csv(out / f'{path.stem}_camera.csv')
         assert header[:3] == ['time (s)', 'temperature (°C)', 'integration time (ms)']
-        assert header[3] == 'Spot mean (x 1-4, y 1-3 pixel) [counts/ms]'
+        assert header[3] == 'Spot mean (x 1-4, y 1-3 pixel) [A.U./ms]'
         means = [np.mean([10 * y + x + index for y in (1, 2) for x in (1, 2, 3)]) for index in range(5)]
         assert [row[3] for row in rows] == pytest.approx([mean / (10. * (index + 1)) for index, mean in enumerate(means)])
 
@@ -468,7 +468,7 @@ class TestCamera:
             assert np.array_equal(images[index], 10 * rows + columns + index)
         assert metadata['frames'] == 5 and metadata['finterval'] == pytest.approx(1.0)
         assert metadata['Labels'][0].startswith('t=0.000 s, T=30.000')
-        assert 'Camera1' in metadata['Info'] and 'counts' in metadata['Info']
+        assert 'Camera1' in metadata['Info'] and 'A.U.' in metadata['Info']
 
     def test_the_colors_are_the_channels(self, h5saver, qapp, tmp_path, tifffile):
         path = write_experiment(h5saver, spectrometer=False, channels=3)
@@ -518,7 +518,7 @@ class TestCamera:
         out = run_export(path, tmp_path)
 
         header, rows = read_csv(out / f'{path.stem}_camera.csv')
-        assert header == ['time (s)', 'temperature (°C)', 'Spot mean (x 1-4, y 1-3 pixel) [counts]', 'tif frame']
+        assert header == ['time (s)', 'temperature (°C)', 'Spot mean (x 1-4, y 1-3 pixel) [A.U.]', 'tif frame']
         assert len(rows) == 5
         # the images are 0.4 s after the readouts of the spectrometer: time from the start of the experiment
         assert [row[0] for row in rows] == pytest.approx([0.4, 1.4, 2.4, 3.4, 4.4])
@@ -542,9 +542,9 @@ class TestCamera:
         out = run_export(path, tmp_path, '--with-spectrometers')
 
         header, rows = read_csv(out / f'{path.stem}_camera.csv')
-        assert header == ['time (s)', 'temperature (°C)', 'Spot mean (x 1-4, y 1-3 pixel) [counts]',
-                          'tif frame'][:3] + ['spectrometer 1 A mean (500-510 nm) [counts]',
-                                              'spectrometer 1 B mean (600-610 nm) [counts]', 'tif frame']
+        assert header == ['time (s)', 'temperature (°C)', 'Spot mean (x 1-4, y 1-3 pixel) [A.U.]',
+                          'tif frame'][:3] + ['spectrometer 1 A mean (500-510 nm) [A.U.]',
+                                              'spectrometer 1 B mean (600-610 nm) [A.U.]', 'tif frame']
         # the closest readout of the spectrometer: 0.4 s before (the image at 0.4 is closest to the readout at 0)
         assert [row[3] for row in rows] == pytest.approx([0., 100., 200., 300., 400.])
         assert [row[4] for row in rows] == pytest.approx([1., 101., 201., 301., 401.])
@@ -576,7 +576,7 @@ class TestCamera:
         out = run_export(path, tmp_path)
 
         header, rows = read_csv(out / f'{path.stem}_camera.csv')
-        assert header == ['time (s)', 'Spot mean (x 1-4, y 1-3 pixel) [counts]', 'tif frame'] and len(rows) == 5
+        assert header == ['time (s)', 'Spot mean (x 1-4, y 1-3 pixel) [A.U.]', 'tif frame'] and len(rows) == 5
 
     def test_the_images_which_were_not_recorded_make_a_csv_and_no_tif(self, h5saver, qapp, tmp_path, capsys):
         path = write_experiment(h5saver, image=False)
@@ -645,9 +645,9 @@ class TestCropsAndAggregations:
         out = run_export(path, tmp_path)
 
         header, rows = read_csv(out / f'{path.stem}_camera.csv')
-        assert header == ['time (s)', 'temperature (°C)', 'Mean mean (x 1-4, y 1-3 pixel) [counts]',
-                          'Sum sum (x 1-4, y 1-3 pixel) [counts]', 'Median median (x 1-4, y 1-3 pixel) [counts]',
-                          'Max max (x 1-4, y 1-3 pixel) [counts]', 'tif frame']
+        assert header == ['time (s)', 'temperature (°C)', 'Mean mean (x 1-4, y 1-3 pixel) [A.U.]',
+                          'Sum sum (x 1-4, y 1-3 pixel) [A.U.]', 'Median median (x 1-4, y 1-3 pixel) [A.U.]',
+                          'Max max (x 1-4, y 1-3 pixel) [A.U.]', 'tif frame']
 
     def test_the_values_are_the_aggregations_of_the_pixels(self, h5saver, qapp, tmp_path):
         path = write_experiment(h5saver, spectrometer=False, camera_rois=self.ROIS)

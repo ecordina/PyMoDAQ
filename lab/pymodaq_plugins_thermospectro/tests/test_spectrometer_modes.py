@@ -178,14 +178,14 @@ class TestSettingsOfASpectrometer:
         assert settings.crop_interval == 0.0
 
     def test_the_spectra_are_not_divided_unless_asked(self, settings):
-        assert not settings.spectrum_per_integration and settings.spectrum_units == 'counts'
+        assert not settings.spectrum_per_integration and settings.spectrum_units == 'A.U.'
         assert settings.child('spectrum_per_integration').title() == 'Spectra per ms of integration:'
 
     def test_the_spectra_are_per_ms_once_divided(self, settings):
         settings.child('spectrum_per_integration').setValue(True)
 
-        assert settings.spectrum_per_integration and settings.spectrum_units == 'counts/ms'
-        assert settings.value_units == 'counts'  # (the values of the ROIs are another option)
+        assert settings.spectrum_per_integration and settings.spectrum_units == 'A.U./ms'
+        assert settings.value_units == 'A.U.'  # (the values of the ROIs are another option)
 
     def test_the_two_options_are_independent(self, settings):
         settings.child('per_integration').setValue(True)
@@ -207,7 +207,7 @@ class TestSettingsOfASpectrometer:
     def test_a_tree_from_an_older_file_does_not_divide_the_spectra(self, settings):
         settings.param.child('spectrum_per_integration').remove()
 
-        assert not settings.spectrum_per_integration and settings.spectrum_units == 'counts'
+        assert not settings.spectrum_per_integration and settings.spectrum_units == 'A.U.'
 
 
 @pytest.fixture
@@ -242,7 +242,7 @@ class TestMeasuredByTheUnit:
 
         values = spectrometer_bench.measurements[-1].values
         assert values[0] == pytest.approx(150. / 20.) and values[1] == pytest.approx(150. * 21 / 20.)
-        assert spectrometer_bench.unit.value_units == 'counts/ms'
+        assert spectrometer_bench.unit.value_units == 'A.U./ms'
 
     def test_the_crops_are_due_at_each_measurement_unless_told_otherwise(self, spectrometer_bench):
         spectrometer_bench.unit.start_live(time.time())
@@ -320,7 +320,7 @@ class TestCropsInTheFile:
 
         spectrum = build_dtes(UnitRecording.from_unit(unit), measurement)[0][0]
 
-        assert np.array_equal(spectrum.data[0], X - 400. + 3) and str(spectrum.units) == 'counts'
+        assert np.array_equal(spectrum.data[0], X - 400. + 3) and str(spectrum.units) == ''  # (A.U.: no unit)
 
     def test_a_crop_outside_of_the_spectrum_stops_the_experiment_from_starting(self, unit):
         unit.spectrum = make_measurement(unit, 0).spectrum
@@ -357,7 +357,7 @@ class TestCropsInTheFile:
             assert window['NavAxes/Axis00'][:].tolist() == [1000., 1001., 1002., 1003.]
             roi = json.loads(attribute(window, 'roi'))
             assert roi == {'name': 'Window', 'start': 500.0, 'stop': 510.0, 'aggregation': 'crop'}
-            assert attribute(window, 'spectrometer') == 'Spectro1' and attribute(window, 'intensity_units') == 'counts'
+            assert attribute(window, 'spectrometer') == 'Spectro1' and attribute(window, 'intensity_units') == 'A.U.'
             assert [json.loads(attribute(groups['Unit1_ROIs'], 'rois'))[0]['aggregation']] == ['mean']
 
 
@@ -368,7 +368,7 @@ class TestDividedByTheIntegrationTime:
 
         spectrum = build_dtes(UnitRecording.from_unit(unit), measurement)[0][0]
 
-        assert np.allclose(spectrum.data[0], (X - 400. + 3) / 50.) and str(spectrum.units) == 'counts/ms'
+        assert np.allclose(spectrum.data[0], (X - 400. + 3) / 50.) and str(spectrum.units) == '1/ms'
         assert np.array_equal(measurement.spectrum.dwa.data[0], X - 400. + 3)  # (what was measured is not touched)
 
     def test_so_is_the_part_of_the_spectrum_of_a_crop(self, qapp):
@@ -378,7 +378,7 @@ class TestDividedByTheIntegrationTime:
                   if dte.name == 'Unit1_Crop1'][0][0]
 
         assert np.allclose(window.data[0], [(100. + 0.5 * k + 2.) / 50. for k in range(21)])
-        assert str(window.units) == 'counts/ms'
+        assert str(window.units) == '1/ms'
 
     def test_the_wavelengths_of_a_crop_are_not_divided(self, qapp):
         unit = make_unit(rois=[Roi('Window', 500., 510., aggregation=CROP)], spectrum_per_integration=True)
@@ -410,6 +410,13 @@ class TestDividedByTheIntegrationTime:
         assert np.isnan(divided_by(np.ones(3), 0.)).all() and np.isnan(divided_by(np.ones(3), -5.)).all()
         assert divided_by(np.array([2., 4.]), 2.).tolist() == [1., 2.]
 
+    def test_a_unit_pint_knows_is_kept_and_divided_as_it_is(self, qapp):
+        unit = make_unit(spectrum_per_integration=True, units='counts')
+
+        spectrum = build_dtes(UnitRecording.from_unit(unit), make_measurement(unit, 0, integration=50.))[0][0]
+
+        assert str(spectrum.units) == 'counts/ms'
+
     def test_the_units_the_plugin_gives_are_kept_and_divided(self, qapp):
         unit = make_unit(spectrum_per_integration=True)
         measurement = make_measurement(unit, 0, integration=50.)
@@ -425,10 +432,10 @@ class TestDividedByTheIntegrationTime:
         rois = [dte for dte in build_dtes(UnitRecording.from_unit(unit), make_measurement(unit, 1, integration=50.))
                 if dte.name == 'Unit1_ROIs'][0][0]
 
-        assert float(rois.data[0][0]) == 100. and str(rois.units) == 'counts'  # (the value was given, not divided here)
+        assert float(rois.data[0][0]) == 100. and str(rois.units) == ''  # (the value was given, not divided here)
 
     def test_per_ms(self):
-        assert per_ms('counts') == 'counts/ms' and per_ms('') == '1/ms'
+        assert per_ms('A.U.') == 'A.U./ms' and per_ms('counts') == 'counts/ms' and per_ms('') == '1/ms'
 
     def test_what_each_group_says_of_its_units(self, h5saver, qapp):
         unit = make_unit(rois=[Roi('a', 500., 510.), Roi('Window', 520., 530., aggregation=CROP)], per_integration=False,
@@ -440,9 +447,9 @@ class TestDividedByTheIntegrationTime:
         with h5py.File(experiment.path, 'r') as f:
             groups = titles(f['RawData/Datalogger000'])
             for title in ('Unit1_Spectrum', 'Unit1_Crop1'):
-                assert attribute(groups[title], 'values_units') == 'counts/ms'
+                assert attribute(groups[title], 'values_units') == 'A.U./ms'
                 assert attribute(groups[title], 'per_integration') in (True, np.True_)
-            assert attribute(groups['Unit1_ROIs'], 'values_units') == 'counts'  # (the values: the other option)
+            assert attribute(groups['Unit1_ROIs'], 'values_units') == 'A.U.'  # (the values: the other option)
             assert attribute(groups['Unit1_ROIs'], 'per_integration') in (False, np.False_)
             spectrum = groups['Unit1_Spectrum']['Data1D/CH00/EnlData00'][0]
             assert np.allclose(spectrum, (X - 400.) / 20.)
@@ -583,12 +590,12 @@ class TestTheViewOfASpectrometer:
         assert view.curves_plot.getPlotItem().getAxis('left').labelText == f'ROIs: {text} of the pixels'
 
     def test_the_axis_has_the_units_of_the_values(self, view, spectrometer_bench):
-        assert view.curves_plot.getPlotItem().getAxis('left').labelUnits == 'counts'
+        assert view.curves_plot.getPlotItem().getAxis('left').labelUnits == 'A.U.'
 
         spectrometer_bench.settings.child('per_integration').setValue(True)
         view.update_definitions()
 
-        assert view.curves_plot.getPlotItem().getAxis('left').labelUnits == 'counts/ms'
+        assert view.curves_plot.getPlotItem().getAxis('left').labelUnits == 'A.U./ms'
 
     def test_a_choice_in_the_manager_goes_to_the_settings_through_the_view(self, view, qtbot):
         with qtbot.waitSignal(view.roi_field_edited) as signal:
@@ -617,8 +624,8 @@ class TestExportOfASpectrometer:
         out = run_export(path, tmp_path, '--no-spectra')
 
         header, _ = read_csv(out / f'{path.stem}_spectrometer1.csv')
-        assert header == ['time (s)', 'temperature (°C)', 'Mean mean (500-510 nm) [counts]',
-                          'Sum sum (500-510 nm) [counts]', 'Max max (500-510 nm) [counts]']
+        assert header == ['time (s)', 'temperature (°C)', 'Mean mean (500-510 nm) [A.U.]',
+                          'Sum sum (500-510 nm) [A.U.]', 'Max max (500-510 nm) [A.U.]']
 
     def test_the_crop_is_a_csv_of_its_own_with_the_wavelengths_of_its_window(self, h5saver, qapp, tmp_path):
         path = write_experiment(h5saver, camera=False, spectrometer_rois=self.ROIS, integration=lambda index: 50.)
@@ -707,7 +714,7 @@ class TestSpectraDividedInTheApp:
         _, crops = read_csv(out / f'{path.stem}_spectrometer1_crop_Window.csv')
         assert spectra[3][4] == pytest.approx((0.5 + 3.) / 50.) and crops[3][4] == pytest.approx((120. + 0.5 + 3.) / 50.)
         told = capsys.readouterr().err
-        assert 'the full spectra were divided by the integration time when they were measured (counts/ms)' in told
+        assert 'the full spectra were divided by the integration time when they were measured (A.U./ms)' in told
         assert 'the part of the spectrum of the crop Window were divided' in told
 
     def test_the_report_and_the_units_say_it(self, h5saver, qapp, tmp_path):
@@ -717,9 +724,9 @@ class TestSpectraDividedInTheApp:
         out = run_export(path, tmp_path)
 
         text = (out / f'{path.stem}_experiment.txt').read_text(encoding='utf-8-sig')
-        assert 'the full spectra were divided by the integration time in the extension (counts/ms)' in text
-        assert 'intensity (spectrometer 1): counts; values of the ROIs: counts' not in text  # (no ROIs which are numbers)
-        assert 'full spectra: counts/ms' in text and 'crops: counts/ms' in text
+        assert 'the full spectra were divided by the integration time in the extension (A.U./ms)' in text
+        assert 'intensity (spectrometer 1): A.U.; values of the ROIs: A.U.' not in text  # (no ROIs which are numbers)
+        assert 'full spectra: A.U./ms' in text and 'crops: A.U./ms' in text
 
     def test_the_values_of_the_rois_are_the_other_option(self, h5saver, qapp, tmp_path):
         path = write_experiment(h5saver, camera=False, integration=lambda index: 50., spectrum_per_integration=True)
@@ -727,9 +734,9 @@ class TestSpectraDividedInTheApp:
         out = run_export(path, tmp_path)
 
         header, _ = read_csv(out / f'{path.stem}_spectrometer1.csv')
-        assert header[3] == 'A mean (500-510 nm) [counts]'  # (not divided: only the spectra were)
+        assert header[3] == 'A mean (500-510 nm) [A.U.]'  # (not divided: only the spectra were)
         text = (out / f'{path.stem}_experiment.txt').read_text(encoding='utf-8-sig')
-        assert 'values of the ROIs: counts; full spectra: counts/ms' in text
+        assert 'values of the ROIs: A.U.; full spectra: A.U./ms' in text
 
     def test_a_file_made_before_the_spectra_could_be_divided_is_not_said_to_be(self, h5saver, qapp, tmp_path):
         path = write_experiment(h5saver, camera=False, integration=lambda index: 50.)

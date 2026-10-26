@@ -67,10 +67,10 @@ the spectrum (otherwise the experiment does not start). The *Value* is remembere
 experiment. A ROI gives one thing: for a number and a crop of the same window, make two ROIs.
 
 **Per ms of integration** (under the readout time of the spectrometer): the value of each ROI is divided by the integration time,
-in ms, of its readout: the curves and the file are then per ms (`counts/ms`) and do not jump when the integration time is
+in ms, of its readout: the curves and the file are then per ms (`A.U./ms`) and do not jump when the integration time is
 changed during the experiment. **Spectra per ms of integration** (the next box, **off** by default) divides in the same way what
 is saved of the spectrum: each full spectrum and the part of the spectrum of each crop; it is a separate option because a full
-spectrum is the raw measurement (the integration time is saved next to it). **Intensity unit** (`counts` by default) is the unit
+spectrum is the raw measurement (the integration time is saved next to it). **Intensity unit** (`A.U.` by default, arbitrary units) is the unit
 of what the instrument measures, which its plugin does not say: it is on the axis of the curves and saved with the data. None of
 them can be changed during an experiment (the integration time can: see below).
 
@@ -221,7 +221,7 @@ the intensity unit, or per ms if they were divided, the images in the intensity 
 `intensity_units` and `per_integration`.
 
 **csv, tif and text files**: the command `lab_export FILE.h5` (see `lab_apps`) turns the file into
-`FILE_spectrometer1.csv` (`time (s) | temperature (°C) | integration time (ms) | ROI 1 mean (450-455 nm) [counts] | ...`, one row
+`FILE_spectrometer1.csv` (`time (s) | temperature (°C) | integration time (ms) | ROI 1 mean (450-455 nm) [A.U.] | ...`, one row
 per readout), `FILE_spectrometer1_spectra.csv` (the full spectra, one row each, one column per wavelength),
 `FILE_spectrometer1_crop_<name>.csv` (the part of the spectrum of each crop, the same), `FILE_camera.csv` (the ROIs of the
 camera which are numbers, with the frame of the tif where there is an image), `FILE_camera.tif` (the images, axes T, C, Y, X),

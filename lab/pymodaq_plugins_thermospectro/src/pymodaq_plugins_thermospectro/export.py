@@ -7,7 +7,7 @@ The h5 file written by the extension is made of one small array per kind of data
 usual tools read, next to the h5 file (or in the folder of ``-o``), with its name as the beginning of the names:
 
 * **the values** of each spectrometer (``Unit1_...``, ``Unit2_...``), ``<file>_spectrometer1.csv``: one row per readout,
-  ``time (s) | temperature (°C) | integration time (ms) | ROI 1 mean (450-455 nm) [counts] | ROI 2 sum ... [counts] | ...``.
+  ``time (s) | temperature (°C) | integration time (ms) | ROI 1 mean (450-455 nm) [A.U.] | ROI 2 sum ... [A.U.] | ...``.
   The temperature is there if the unit has a thermal controller, the integration time if it was saved, the ROIs which were
   recorded and give a number (their mean, sum, median, min, max or standard deviation, as their name says);
 * **the full spectra** (when they were saved), ``<file>_spectrometer1_spectra.csv``: one row per spectrum, ``time (s) |
@@ -28,7 +28,7 @@ usual tools read, next to the h5 file (or in the folder of ``-o``), with its nam
 What is not in the file (a spectrometer or a camera which was not used, a temperature, a full spectrum, an image which
 were not recorded) is left out. The units are the ones the file holds: in the header of the columns of the csv files, in
 square brackets for what is measured, and in the text file. The values of the ROIs divided by the integration time in the
-extension (*Per ms of integration*) are in ``counts/ms``, and so are the full spectra and the crops of the spectra if
+extension (*Per ms of integration*) are in ``A.U./ms``, and so are the full spectra and the crops of the spectra if
 *Spectra per ms of integration* was ticked; ``--per-integration-time`` does it here, with the integration time of each
 readout, for the values, the spectra and the crops which were saved as they were measured.
 
@@ -176,7 +176,7 @@ class UnitData:
 
 
 def divided(units: str) -> str:
-    """The units of a measurement per ms of integration: ``counts`` -> ``counts/ms``"""
+    """The units of a measurement per ms of integration: ``A.U.`` -> ``A.U./ms``"""
     return f'{units}/{INTEGRATION_UNITS}' if units else f'1/{INTEGRATION_UNITS}'
 
 
@@ -987,11 +987,11 @@ def parser() -> argparse.ArgumentParser:
                            help='the experiment of the file, 0 is the first (default: the last one)')
     arguments.add_argument('--list', action='store_true', help='only tell what the files hold')
     arguments.add_argument('--short-names', action='store_true',
-                           help='name the columns of the ROIs "ROI 1 [counts]" instead of "ROI 1 (454.2-464.6 nm) '
-                                '[counts]"')
+                           help='name the columns of the ROIs "ROI 1 [A.U.]" instead of "ROI 1 (454.2-464.6 nm) '
+                                '[A.U.]"')
     arguments.add_argument('--per-integration-time', action='store_true',
                            help='divide the values of the ROIs and the spectra which were saved as they were measured '
-                                'by the integration time of each readout (counts/ms)')
+                                'by the integration time of each readout (A.U./ms)')
     arguments.add_argument('--no-spectra', action='store_true', help='do not write the csv file of the full spectra')
     arguments.add_argument('--no-tif', action='store_true', help='do not write the tif files (the csv files only)')
     arguments.add_argument('--absolute-time', action='store_true', help='the time in epoch seconds, not from the start')

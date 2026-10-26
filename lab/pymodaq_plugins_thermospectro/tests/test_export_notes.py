@@ -218,7 +218,7 @@ class TestTheReport:
         text = self.text(out)
         assert 'Units\n-----\n' in text and 'temperature: °C' in text
         assert 'wavelength: nm (spectrometer 1)' in text
-        assert 'intensity (spectrometer 1): counts; values of the ROIs: counts' in text
+        assert 'intensity (spectrometer 1): A.U.; values of the ROIs: A.U.' in text
 
     def test_the_files_which_were_written_are_listed(self, h5saver, qapp, tmp_path):
         path = write_file(h5saver, tmp_path, [(1002.5, 'Door opened')])

@@ -62,6 +62,7 @@ from pymodaq.utils.h5modules.module_saving import (
 from pymodaq_plugins_thermospectro.camera import window_ranges
 from pymodaq_plugins_thermospectro.ramp import PHASE_CODES
 from pymodaq_plugins_thermospectro.rois import unique_names
+from pymodaq_plugins_thermospectro.unit_settings import DEFAULT_INTENSITY_UNITS
 
 logger = set_logger(get_module_name(__file__))
 
@@ -83,14 +84,19 @@ ARBITRARY_UNITS = ('a.u.', 'a.u', 'au', 'arb.u.', 'arb. u.', 'arb. units', 'arbi
 
 def pint_safe(units: str) -> str:
     """The units as the data model of PyMoDAQ can hold them (a unit which pint does not know, or reads as something else
-    than what is meant, is dropped there: the groups say it in their attributes too)"""
-    if units.strip().lower() in ARBITRARY_UNITS:
-        return ''
+    than what is meant, is dropped there: the groups say it in their attributes too)
+
+    Arbitrary units (``A.U.``) are no unit: nothing is kept, and ``A.U./ms`` is a rate, ``1/ms``.
+    """
+    text = units.strip()
+    head, slash, tail = text.partition('/')
+    if head.strip().lower() in ARBITRARY_UNITS:
+        text = f'1/{tail.strip()}' if slash and tail.strip() else ''
     try:
-        Unit(units)
+        Unit(text)
     except Exception:
         return ''
-    return units
+    return text
 
 
 def group_title(number: int, what: str) -> str:
@@ -276,10 +282,10 @@ class UnitRecording:
     detector_kind: str = 'spectrometer'
     crops: list = field(default_factory=list)
     integration: bool = False
-    intensity_units: str = 'counts'
-    value_units: str = 'counts'
+    intensity_units: str = DEFAULT_INTENSITY_UNITS
+    value_units: str = DEFAULT_INTENSITY_UNITS
     per_integration: bool = False
-    spectrum_units: str = 'counts'
+    spectrum_units: str = DEFAULT_INTENSITY_UNITS
     spectrum_per_integration: bool = False
 
     @classmethod
@@ -366,7 +372,7 @@ def divided_by(array: np.ndarray, integration: float) -> np.ndarray:
 
 
 def per_ms(units: str) -> str:
-    """``counts`` -> ``counts/ms``"""
+    """``A.U.`` -> ``A.U./ms``"""
     return f'{units}/ms' if units else '1/ms'
 
 

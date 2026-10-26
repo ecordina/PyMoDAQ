@@ -167,12 +167,14 @@ class TestUnitsOfTheValues:
     def settings(self, qapp):
         return UnitSettings(Parameter.create(**unit_definition(1, default_rois(1))), 1)
 
-    def test_counts_by_default(self, settings):
-        assert settings.intensity_units == DEFAULT_INTENSITY_UNITS == 'counts' and settings.value_units == 'counts'
+    def test_arbitrary_units_by_default(self, settings):
+        assert settings.intensity_units == DEFAULT_INTENSITY_UNITS == 'A.U.' and settings.value_units == 'A.U.'
 
     def test_per_ms_once_divided(self, settings):
         settings.child('per_integration').setValue(True)
 
+        assert settings.value_units == 'A.U./ms'
+        settings.child('intensity_units').setValue('counts')
         assert settings.value_units == 'counts/ms'
 
     def test_the_unit_is_the_one_of_the_user(self, settings):
@@ -191,7 +193,7 @@ class TestUnitsOfTheValues:
     def test_the_unit_of_a_unit_is_shown(self, bench):
         bench.settings.child('per_integration').setValue(True)
 
-        assert bench.unit.value_units == 'counts/ms'
+        assert bench.unit.value_units == 'A.U./ms'
 
     def test_both_are_classified_as_units(self, settings):
         assert settings.classify(settings.child('intensity_units')) == ('units', 'intensity_units')
@@ -202,8 +204,8 @@ class TestUnitsOfTheValues:
         settings.param.child('intensity_units').remove()
         settings.param.child('record', 'integration_time').remove()
 
-        assert settings.intensity_units == 'counts' and not settings.per_integration
-        assert settings.record_integration and settings.value_units == 'counts'
+        assert settings.intensity_units == 'A.U.' and not settings.per_integration
+        assert settings.record_integration and settings.value_units == 'A.U.'
 
 
 class TestTheIntegrationTimeInTheFile:
@@ -272,12 +274,35 @@ class TestUnitsInTheFile:
         assert str(rois.units) == 'V'
 
     def test_per_ms_when_they_were_divided(self, qapp):
-        unit = make_unit(rois=[Roi('a', 500., 510.)], per_integration=True)
+        unit = make_unit(rois=[Roi('a', 500., 510.)], per_integration=True, units='counts')
 
         rois = [dte for dte in build_dtes(UnitRecording.from_unit(unit), make_measurement(unit, 1))
                 if dte.name == 'Unit1_ROIs'][0][0]
 
         assert str(rois.units) == 'counts/ms'
+
+    def test_arbitrary_units_are_no_unit_for_the_data_and_a_rate_when_divided(self, qapp):
+        undivided = make_unit(rois=[Roi('a', 500., 510.)])
+        divided = make_unit(rois=[Roi('a', 500., 510.)], per_integration=True)
+
+        before = [dte for dte in build_dtes(UnitRecording.from_unit(undivided), make_measurement(undivided, 1))
+                  if dte.name == 'Unit1_ROIs'][0][0]
+        after = [dte for dte in build_dtes(UnitRecording.from_unit(divided), make_measurement(divided, 1))
+                 if dte.name == 'Unit1_ROIs'][0][0]
+
+        assert str(before.units) == '' and str(after.units) == '1/ms'
+
+    def test_the_groups_name_the_arbitrary_units(self, h5saver, qapp):
+        unit = make_unit(per_integration=True, integration=True)  # (the default unit)
+        experiment = Experiment(h5saver, [unit])
+        experiment.write(unit, 0, integration=20.)
+        experiment.finish()
+
+        with h5py.File(experiment.path, 'r') as f:
+            groups = titles(f['RawData/Datalogger000'])
+            assert attribute(groups['Unit1_ROIs'], 'values_units') == 'A.U./ms'
+            assert attribute(groups['Unit1_ROIs'], 'intensity_units') == 'A.U.'
+            assert attribute(groups['Unit1_Spectrum'], 'values_units') == 'A.U.'  # (the spectra are the other option)
 
     def test_the_full_spectrum_has_the_unit_of_the_user_if_the_plugin_gives_none(self, qapp):
         unit = make_unit(units='counts')
@@ -323,7 +348,9 @@ class TestUnitsInTheFile:
 
     @pytest.mark.parametrize('text, safe', [('counts', 'counts'), ('counts/ms', 'counts/ms'), ('V', 'V'), ('', ''),
                                             ('photons per ms', ''), ('no such unit', ''), ('a.u.', ''), ('A.U.', ''),
-                                            ('au', ''), ('arbitrary units', '')])
+                                            ('au', ''), ('arbitrary units', ''), (' V ', 'V'),
+                                            ('A.U./ms', '1/ms'), ('a.u./ms', '1/ms'), ('arbitrary units/ms', '1/ms'),
+                                            ('no such unit/ms', '')])
     def test_pint_safe(self, text, safe):
         assert pint_safe(text) == safe
 

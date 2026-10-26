@@ -47,7 +47,7 @@ class TestSpectrumNowAndThen:
         out = run_export(path, tmp_path)
 
         header, rows = read_csv(out / f'{path.stem}_spectrometer1.csv')
-        assert header == ['time (s)', 'temperature (°C)', 'A mean (500-510 nm) [counts]']
+        assert header == ['time (s)', 'temperature (°C)', 'A mean (500-510 nm) [A.U.]']
         assert len(rows) == 9
         assert [row[2] for row in rows] == pytest.approx([100. * i for i in range(9)])  # (the ROIs: every readout)
 

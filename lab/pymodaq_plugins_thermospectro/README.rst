@@ -124,9 +124,10 @@ option, because a full spectrum is the raw measurement: leave it off to keep the
 integration time is saved next to them). The images and the crops of the camera are always saved as they come. ``lab_export`` can
 divide what was not divided too (``--per-integration-time``).
 
-**Units.** *Intensity unit* (under the readout time, ``counts`` by default) is the unit of what the instrument measures (the
-plugins of the instruments do not say): it is on the axis of the curves and saved with the data; what is divided by the
-integration time (the values of the ROIs, the spectra) is in that unit per ms (``counts/ms``). The temperature is in the unit of its thermal controller, the
+**Units.** *Intensity unit* (under the readout time, ``A.U.`` by default: arbitrary units) is the unit of what the instrument
+measures (the plugins of the instruments do not say: write ``counts``, ``V``... if you know it): it is on the axis of the
+curves and saved with the data; what is divided by the integration time (the values of the ROIs, the spectra) is in that unit
+per ms (``A.U./ms``). The temperature is in the unit of its thermal controller, the
 integration time in ms, the wavelengths in nm, the time in s: they are all saved with their data and written in the files of
 ``lab_export``.
 
@@ -309,16 +310,16 @@ single file which needs only ``numpy``, ``h5py`` and ``tifffile``: it can be cop
 The names of the new files start with the one of the h5 file:
 
 * **the values of a spectrometer** and of its thermal controller, ``..._spectrometer1.csv``: one row per readout,
-  ``time (s) | temperature (°C) | integration time (ms) | ROI 1 mean (450-455 nm) [counts] | ROI 2 sum ... [counts] | ...`` (the
+  ``time (s) | temperature (°C) | integration time (ms) | ROI 1 mean (450-455 nm) [A.U.] | ROI 2 sum ... [A.U.] | ...`` (the
   temperature if there is a thermal controller, the integration time if it was saved, each ROI which was recorded and gives
   a number, its name saying which one; the program of the ramp with ``--program``);
 * **the full spectra**, if they were saved, in a file of their own, ``..._spectrometer1_spectra.csv``: one row per spectrum,
   ``time (s) | temperature (°C) | integration time (ms) | 400.123 nm | 400.456 nm | ...`` (one column per wavelength); and the
   ROIs which are **crops**, each in a file of its own too, ``..._spectrometer1_crop_<name of the ROI>.csv``: the same, with the
   wavelengths of the window only. They are kept apart from the values: the csv files of the values are the same whatever
-  was saved of the spectra. The units of the spectra are in the text (``counts``, ``counts/ms`` if they were divided);
+  was saved of the spectra. The units of the spectra are in the text (``A.U.``, ``A.U./ms`` if they were divided);
 * **the camera**: ``..._camera.csv`` has one row per readout, ``time (s) | temperature (°C) | integration time (ms) | ROI 1 sum (x 10-18,
-  y 5-13 pixel) [counts] | ... | tif frame``, with the ROIs which give a number (mean, sum, median, min, max or std, as their name
+  y 5-13 pixel) [A.U.] | ... | tif frame``, with the ROIs which give a number (mean, sum, median, min, max or std, as their name
   says) and, where an image was saved, its frame in the tif; ``..._camera.tif`` has the images (*The full image*) as a time
   series of the axes **T, C, Y, X** (an ImageJ hyperstack: Fiji / ImageJ, ``tifffile.imread``; the time and the temperature are
   the labels of the frames), and ``..._camera_crop_<name of the ROI>.tif`` the pixels of each ROI which is a crop, the same kind
@@ -331,14 +332,14 @@ The names of the new files start with the one of the h5 file:
 
 What is not in the file (a spectrometer or a camera which was not used, a temperature, a full spectrum, an image, observations
 which were not recorded) is left out; the text is always written. **The units are in the headers**, in square brackets for what
-is measured: ``[counts]``, or ``[counts/ms]`` for the values which were divided by the integration time in the extension, or the
+is measured: ``[A.U.]``, or ``[A.U./ms]`` for the values which were divided by the integration time in the extension, or the
 unit you gave; the time is in seconds from the first measurement of the experiment, **the same zero in all the files**
 (``--absolute-time`` for epoch seconds). The csv files are in UTF-8 with a signature, so that Excel shows ``°C``.
 
 Options: ``--per-integration-time`` divides the values of the ROIs, the spectra and the crops of the spectra which were saved as
-they were measured by the integration time of each readout (``counts/ms``; what was divided in the extension is not divided
+they were measured by the integration time of each readout (``A.U./ms``; what was divided in the extension is not divided
 twice, and it says so),
-``--short-names`` (``ROI 1 [counts]`` instead of ``ROI 1 mean (454.2-464.6 nm) [counts]``), ``--no-spectra``, ``--no-tif``, ``--program`` (the
+``--short-names`` (``ROI 1 [A.U.]`` instead of ``ROI 1 mean (454.2-464.6 nm) [A.U.]``), ``--no-spectra``, ``--no-tif``, ``--program`` (the
 set-point, cycle and phase of the ramp), ``--delimiter``, ``-o FOLDER``, ``--experiment N`` (the experiment of the file, the last one by
 default), ``--with-spectrometers`` (in the csv of the camera, add the temperature and the ROIs of the spectrometers at the readouts of
 the camera: the closest readout of the spectrometer, or ``--interpolate``). The spectra are read from the file a few hundred
@@ -372,9 +373,10 @@ their title (``Detector000``, ``Actuator000``... only number them):
 ====================== ===================================================================================
 
 The units are kept: the arrays have their ``units`` (the temperature in the unit of the thermal controller, the integration time in
-ms, the values of the ROIs in the intensity unit, ``counts/ms`` if they were divided by the integration time, the full spectra
-and the crops of a spectrometer in the intensity unit, or ``counts/ms`` if they were divided, the images in the intensity unit)
-and the groups say so in ``values_units``, ``intensity_units`` and ``per_integration``.
+ms; the values of the ROIs, the full spectra, the crops and the images in the intensity unit, per ms if they were divided by the
+integration time; arbitrary units, the default, are no unit for PyMoDAQ's data model: the arrays then have none, or ``1/ms``
+when they were divided) and the groups say what they hold, written the way the intensity unit was, in ``values_units``,
+``intensity_units`` and ``per_integration``.
 
 What was written about the experiment is in the attributes ``experiment_title``, ``sample``, ``operator``, ``protocol`` and
 ``application`` of the group ``RawData`` (written the way PyMoDAQ writes its attributes, as a small json text: the H5 browser

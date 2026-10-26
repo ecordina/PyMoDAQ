@@ -225,7 +225,7 @@ class TestSettingsOfACamera:
 
     def test_the_options_of_the_spectra_are_not_the_ones_of_a_camera(self, settings):
         assert 'spectrum_per_integration' not in settings.param.names  # (the images are saved as they come)
-        assert not settings.spectrum_per_integration and settings.spectrum_units == 'counts'
+        assert not settings.spectrum_per_integration and settings.spectrum_units == 'A.U.'
 
 
 @pytest.fixture
@@ -263,7 +263,7 @@ class TestMeasuredByTheUnit:
         pixels = gradient()[20:30, 10:20]
         values = camera_bench.measurements[-1].values
         assert values[0] == pytest.approx(pixels.mean() / 20.) and values[1] == pytest.approx(pixels.sum() / 20.)
-        assert camera_bench.measurements[-1].integration_time == 20. and camera_bench.unit.value_units == 'counts/ms'
+        assert camera_bench.measurements[-1].integration_time == 20. and camera_bench.unit.value_units == 'A.U./ms'
 
     def test_the_crops_are_due_at_each_measurement_unless_told_otherwise(self, camera_bench):
         camera_bench.unit.start_live(time.time())
@@ -374,10 +374,10 @@ class TestCropsInTheFile:
             assert window['NavAxes/Axis00'][:].tolist() == [1000., 1001., 1002., 1003.]
             roi = json.loads(attribute(window, 'roi'))
             assert roi['name'] == 'Window' and roi['x0'] == 2 and roi['y1'] == 3 and roi['aggregation'] == 'crop'
-            assert attribute(window, 'camera') == 'Camera1' and attribute(window, 'intensity_units') == 'counts'
+            assert attribute(window, 'camera') == 'Camera1' and attribute(window, 'intensity_units') == 'A.U.'
             rois = groups['Unit3_ROIs']
             assert [json.loads(attribute(rois, 'rois'))[0]['aggregation']] == ['mean']
-            assert attribute(rois, 'values_units') == 'counts'
+            assert attribute(rois, 'values_units') == 'A.U.'
 
 
 class TestTheManagerOfACamera:
@@ -491,7 +491,7 @@ class TestTheViewOfACamera:
     def test_the_legend_tells_the_aggregations_when_they_differ(self, view):
         assert [curve.name() for curve in view.curves_plot.curves] == ['Mean (mean)', 'Sum (sum)']
         text, units = view.value_label([roi for roi in view.unit.settings.rois if not roi.is_crop])
-        assert text == 'ROIs: see the legend' and units == 'counts'
+        assert text == 'ROIs: see the legend' and units == 'A.U.'
 
     def test_the_legend_has_the_names_when_all_curves_are_the_same(self, view, camera_bench):
         camera_bench.settings.child('rois', 'roi01', 'aggregation').setValue('mean')
@@ -513,7 +513,7 @@ class TestTheViewOfACamera:
         assert view.curves_plot.getPlotItem().getAxis('left').labelText == f'ROIs: {text} of the pixels'
 
     def test_the_axis_has_the_units_of_the_values(self, view, camera_bench):
-        assert view.curves_plot.getPlotItem().getAxis('left').labelUnits == 'counts'
+        assert view.curves_plot.getPlotItem().getAxis('left').labelUnits == 'A.U.'
 
         camera_bench.settings.child('per_integration').setValue(True)
         camera_bench.settings.child('intensity_units').setValue('V')

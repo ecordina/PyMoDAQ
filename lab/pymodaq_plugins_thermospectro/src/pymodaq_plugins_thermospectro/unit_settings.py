@@ -42,8 +42,9 @@ RAMP_FIELDS = ('mode', 'initial', 'take_current', 'final', 'velocity', 'duration
 #: The default times of a spectrometer
 DEFAULT_INTEGRATION_TIME = 500.0  # ms
 DEFAULT_READOUT_TIME = 1.0  # s
-#: What an instrument measures, until the user says otherwise (an ADC gives counts), and the unit of the integration time
-DEFAULT_INTENSITY_UNITS = 'counts'
+#: What an instrument measures, until the user says otherwise (the plugins do not say: arbitrary units, A.U.; an ADC gives
+#: counts, a power meter W...), and the unit of the integration time
+DEFAULT_INTENSITY_UNITS = 'A.U.'
 INTEGRATION_UNITS = 'ms'
 
 
@@ -145,7 +146,7 @@ SPECTRA_OPTION = {
     SPECTROMETER: [
         {'title': 'Spectra per ms of integration:', 'name': 'spectrum_per_integration', 'type': 'bool', 'value': False,
          'tip': 'Divide the full spectrum, and the part of the spectrum of the ROIs which are a crop, by the integration '
-                'time, in ms, of their readout before they are saved: they are then per millisecond (counts/ms). Off by '
+                'time, in ms, of their readout before they are saved: they are then per millisecond (A.U./ms). Off by '
                 'default: they are saved as they come, with the integration time next to them. Not while an '
                 'experiment runs'}],
     CAMERA: []}
@@ -174,8 +175,9 @@ def _unit_definition(number: int, rois: Sequence[Roi], enabled: bool, kind: str,
                 f'It must be longer than the {"exposure" if cam else "integration"} time (as many times as the '
                 f'module of the {what} averages: its Naverage)'},
         {'title': 'Intensity unit:', 'name': 'intensity_units', 'type': 'str', 'value': DEFAULT_INTENSITY_UNITS,
-         'tip': f'The unit of what the {what} measures (the instrument does not say): it is shown in the plots and '
-                'saved with the data. The values of the ROIs divided by the integration time are in this unit per ms'},
+         'tip': f'The unit of what the {what} measures (the instrument does not say): A.U. (arbitrary units) unless '
+                'you write another one (counts, V...). It is shown in the plots and saved with the data. What is '
+                'divided by the integration time is in this unit per ms (A.U./ms)'},
         {'title': 'Per ms of integration:' if not cam else 'Per ms of exposure:', 'name': 'per_integration',
          'type': 'bool', 'value': False,
          'tip': f'Divide the value of each ROI (the ROIs which give a number) by the '
@@ -368,7 +370,7 @@ class UnitSettings:
 
     @property
     def intensity_units(self) -> str:
-        """What the detector measures (counts, unless the user says otherwise)"""
+        """What the detector measures (A.U., arbitrary units, unless the user says otherwise)"""
         try:
             return str(self.param['intensity_units']).strip()
         except KeyError:
