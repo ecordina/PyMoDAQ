@@ -399,7 +399,8 @@ class ThermoSpectro(CustomExt):
         elif kind == 'integration':
             unit.integration_changed()  # (during an experiment: before the next readout)
         elif kind == 'units':  # (the intensity unit, or the division by the integration time: the curves start again)
-            self._rois_changed(unit, reset=True)
+            if key != 'spectrum_per_integration':  # (the one of the full spectra only changes what is saved)
+                self._rois_changed(unit, reset=True)
         elif kind == 'readout':
             unit.update_timing()
         elif kind == 'plot_temperature':

@@ -31,10 +31,10 @@ X = np.linspace(400., 900., 1001)
 
 
 def make_unit(number=1, rois=None, run_ramp=True, thermostat=True, integration=False, units=None,
-              per_integration=False):
+              per_integration=False, spectrum_per_integration=False):
     """A unit (not running) with fake modules, as the extension would hand it to the saver (its integration time is
     saved only if asked: it has its own tests; `units` is the intensity unit, `per_integration` the division of the
-    values by the integration time)"""
+    values by the integration time, `spectrum_per_integration` the one of the full spectra and crops)"""
     detector = FakeDetector(f'Spectro{number}')
     thermo = FakeThermostat(f'Thermo{number}') if thermostat else None
     settings = UnitSettings(Parameter.create(**unit_definition(number, rois if rois is not None else
@@ -46,6 +46,7 @@ def make_unit(number=1, rois=None, run_ramp=True, thermostat=True, integration=F
     if units is not None:
         settings.child('intensity_units').setValue(units)
     settings.child('per_integration').setValue(per_integration)
+    settings.child('spectrum_per_integration').setValue(spectrum_per_integration)
     unit = Unit(settings, FakeManager(*[m for m in (detector, thermo) if m is not None]))
     unit.attach()
     return unit
@@ -240,7 +241,7 @@ class TestBuild:
         dwa = build_dtes(UnitRecording.from_unit(unit), measurement)[1][0]
 
         assert [float(array[0]) for array in dwa.data] == [100., 101.]
-        assert dwa.labels == ['a (500-510 nm)', 'b (600-610 nm)']
+        assert dwa.labels == ['a mean (500-510 nm)', 'b mean (600-610 nm)']
 
     def test_the_temperature_and_the_program(self, qapp):
         unit = make_unit()

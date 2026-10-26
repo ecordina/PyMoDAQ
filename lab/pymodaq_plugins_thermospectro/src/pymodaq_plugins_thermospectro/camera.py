@@ -21,6 +21,9 @@ import numpy as np
 from pymodaq_data import DataToExport
 from pymodaq_data.data import DataDim, DataSource, DataWithAxes
 
+# (the choice of what a ROI gives is the same for the ROIs of a spectrum: it is defined with them)
+from pymodaq_plugins_thermospectro.rois import AGGREGATIONS, CROP, DEFAULT_AGGREGATION, MODES, aggregate  # noqa: F401
+
 #: The number of ROIs a camera starts with
 N_DEFAULT = 4
 #: The image the default ROIs are made for (pixels): they are fitted to the real size when the first image comes
@@ -28,14 +31,6 @@ NOMINAL_SHAPE = (1000, 1000)
 #: The side of the default ROIs is picked between these two fractions of the image
 DEFAULT_SIDES = (0.12, 0.25)
 UNITS = 'pixel'
-
-#: What a ROI can give from its pixels: a number...
-AGGREGATIONS = ('mean', 'sum', 'median', 'min', 'max', 'std')
-#: ... or the pixels themselves (a crop of the image)
-CROP = 'crop'
-MODES = AGGREGATIONS + (CROP,)
-DEFAULT_AGGREGATION = 'mean'
-
 
 def pixel_range(low: float, high: float, size: int) -> tuple[int, int]:
     """The pixels of a line of `size` pixels which a window ``low`` to ``high`` covers, as ``(first, stop)``
@@ -89,31 +84,6 @@ def rect_pixels(image: np.ndarray, x0: float, x1: float, y0: float, y1: float) -
         return None
     (row0, row1), (column0, column1) = found
     return image[row0:row1, column0:column1]
-
-
-def aggregate(pixels: np.ndarray, aggregation: str = DEFAULT_AGGREGATION) -> float:
-    """One number out of some pixels: their ``mean``, ``sum``, ``median``, ``min``, ``max`` or ``std`` (the standard
-    deviation of the pixels, not of an estimate: ``numpy.std``). The sums and the means are made in floats: a sum of
-    16 bits pixels does not overflow
-
-    Raises
-    ------
-    ValueError
-        if `aggregation` is not one of :data:`AGGREGATIONS`
-    """
-    if aggregation == 'mean':
-        return float(np.mean(pixels, dtype=float))
-    if aggregation == 'sum':
-        return float(np.sum(pixels, dtype=float))
-    if aggregation == 'median':
-        return float(np.median(pixels))
-    if aggregation == 'min':
-        return float(np.min(pixels))
-    if aggregation == 'max':
-        return float(np.max(pixels))
-    if aggregation == 'std':
-        return float(np.std(pixels, dtype=float))
-    raise ValueError(f'{aggregation!r} is not a way to make a number of some pixels: {", ".join(AGGREGATIONS)}')
 
 
 def rect_value(image: np.ndarray, x0: float, x1: float, y0: float, y1: float,
@@ -234,13 +204,13 @@ class RectRoi:
         ValueError
             if what was saved is not a rectangular ROI
         """
-        aggregation = values.get('aggregation', DEFAULT_AGGREGATION)  # (a file made before it existed has none)
         try:
+            aggregation = values.get('aggregation', DEFAULT_AGGREGATION)  # (a file made before it existed has none)
             roi = cls(name=str(values['name']), x0=float(values['x0']), x1=float(values['x1']),
                       y0=float(values['y0']), y1=float(values['y1']), record=bool(values.get('record', True)),
                       plot=bool(values.get('plot', True)),
                       aggregation=aggregation if aggregation in MODES else DEFAULT_AGGREGATION)
-        except (KeyError, TypeError, ValueError) as e:
+        except (AttributeError, KeyError, TypeError, ValueError) as e:
             raise ValueError(f'Not a rectangular ROI: {values!r}') from e
         if roi.problems():
             raise ValueError('; '.join(roi.problems()))

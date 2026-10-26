@@ -104,8 +104,9 @@ class TestRoi:
 
     def test_label(self):
         assert Roi('ROI 1', 650., 651.).label() == 'ROI 1'
-        assert Roi('ROI 1', 650., 651.5).label('nm', with_range=True) == 'ROI 1 (650-651.5 nm)'
-        assert Roi('ROI 1', 650., 651.).label('', with_range=True) == 'ROI 1 (650-651)'
+        assert Roi('ROI 1', 650., 651.5).label('nm', with_range=True) == 'ROI 1 mean (650-651.5 nm)'
+        assert Roi('ROI 1', 650., 651.).label('', with_range=True) == 'ROI 1 mean (650-651)'
+        assert Roi('ROI 1', 650., 651., aggregation='sum').label('nm', with_range=True) == 'ROI 1 sum (650-651 nm)'
 
     def test_problems(self):
         assert Roi('a', 1., 2.).problems() == []
@@ -256,7 +257,7 @@ class TestStore:
         content = json.loads(store.path.read_text())
 
         assert content == {'version': 1, 'units': {'unit1': {'rois': [
-            {'name': 'x', 'start': 1.0, 'stop': 2.0, 'record': True, 'plot': True}]}}}
+            {'name': 'x', 'start': 1.0, 'stop': 2.0, 'record': True, 'plot': True, 'aggregation': 'mean'}]}}}
 
     def test_unwritable_location_does_not_stop_the_defaults(self, tmp_path):
         blocker = tmp_path / 'blocker'

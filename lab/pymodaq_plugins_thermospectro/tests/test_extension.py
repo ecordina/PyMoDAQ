@@ -1023,8 +1023,8 @@ class TestRoiManager:
 
         with H5Experiment(tmp_path) as saved:
             labels = [saved.label('Unit1_ROIs', index) for index in range(saved.n_zero_d('Unit1_ROIs'))]
-            assert labels == ['ROI 1 (40-55 nm)', 'ROI 4 (200-210 nm)', 'ROI 5 (250-260 nm)', 'ROI 6 (300-310 nm)',
-                              'ROI 7 (30-36 nm)']
+            assert labels == ['ROI 1 mean (40-55 nm)', 'ROI 4 mean (200-210 nm)', 'ROI 5 mean (250-260 nm)',
+                              'ROI 6 mean (300-310 nm)', 'ROI 7 mean (30-36 nm)']
             assert saved.n_zero_d('Unit2_ROIs') == 6  # (the other unit is not touched)
 
     def test_the_proportions_of_the_windows(self, ext, qtbot):
@@ -1414,8 +1414,8 @@ class TestRun:
         wait_for_end(qtbot, ext)
 
         with H5Experiment(tmp_path) as saved:
-            assert saved.label('Unit1_ROIs', 0) == 'ROI 1 (50-60 nm)'
-            assert saved.label('Unit2_ROIs', 5) == 'ROI 6 (300-310 nm)'
+            assert saved.label('Unit1_ROIs', 0) == 'ROI 1 mean (50-60 nm)'
+            assert saved.label('Unit2_ROIs', 5) == 'ROI 6 mean (300-310 nm)'
 
     def test_the_program_is_saved_with_the_set_point_the_cycle_and_the_phase(self, ext, qtbot, tmp_path):
         run(qtbot, ext)
@@ -1616,7 +1616,7 @@ class TestWhatIsRecorded:
             assert saved.titles == ['Unit1_Program', 'Unit1_ROIs', 'Unit1_Temperature', 'Unit2_ROIs', 'Unit2_Spectrum']
             assert saved.n_zero_d('Unit1_ROIs') == 4 and saved.n_zero_d('Unit2_ROIs') == 6
             assert [saved.label('Unit1_ROIs', index) for index in range(4)] == [
-                'ROI 1 (50-60 nm)', 'ROI 3 (150-160 nm)', 'ROI 5 (250-260 nm)', 'ROI 6 (300-310 nm)']
+                'ROI 1 mean (50-60 nm)', 'ROI 3 mean (150-160 nm)', 'ROI 5 mean (250-260 nm)', 'ROI 6 mean (300-310 nm)']
 
     def test_only_the_temperature_of_a_unit(self, ext, qtbot, tmp_path):
         ext.unit(2).settings.child('enabled').setValue(False)

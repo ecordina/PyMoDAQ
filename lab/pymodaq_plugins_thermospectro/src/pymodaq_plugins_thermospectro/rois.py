@@ -1,6 +1,9 @@
-"""Regions of interest (ROI) of a spectrum: a window of wavelengths, followed in time as the mean of its pixels
+"""Regions of interest (ROI) of a spectrum: a window of wavelengths, followed in time as a number made of its pixels (their
+mean, sum, median, min, max or standard deviation: :data:`AGGREGATIONS`), or saved as it is, a **crop** of the spectrum
+(:data:`CROP`)
 
-Pure numpy and json, no Qt and no PyMoDAQ, so that it can be tested alone.
+Pure numpy and json, no Qt and no PyMoDAQ, so that it can be tested alone. The ROIs of a camera (:mod:`.camera`) give the same
+choice.
 
 Each spectrometer starts with :data:`N_DEFAULT` ROIs picked at random (the same ones every time: the random generator
 is seeded with the number of the spectrometer), and what the user changes is remembered in a json file
@@ -24,6 +27,37 @@ N_DEFAULT = 6
 NOMINAL_RANGE = (450.0, 850.0)
 #: The width of the default ROIs is picked between these two values (nm)
 DEFAULT_WIDTHS = (4.0, 12.0)
+#: What a ROI can give from its pixels: a number...
+AGGREGATIONS = ('mean', 'sum', 'median', 'min', 'max', 'std')
+#: ... or the pixels themselves (a crop: the part of the spectrum, or of the image, which the ROI covers)
+CROP = 'crop'
+MODES = AGGREGATIONS + (CROP,)
+DEFAULT_AGGREGATION = 'mean'
+
+
+def aggregate(pixels: np.ndarray, aggregation: str = DEFAULT_AGGREGATION) -> float:
+    """One number out of some pixels: their ``mean``, ``sum``, ``median``, ``min``, ``max`` or ``std`` (the standard
+    deviation of the pixels, not of an estimate: ``numpy.std``). The sums and the means are made in floats: a sum of
+    16 bits pixels does not overflow
+
+    Raises
+    ------
+    ValueError
+        if `aggregation` is not one of :data:`AGGREGATIONS`
+    """
+    if aggregation == 'mean':
+        return float(np.mean(pixels, dtype=float))
+    if aggregation == 'sum':
+        return float(np.sum(pixels, dtype=float))
+    if aggregation == 'median':
+        return float(np.median(pixels))
+    if aggregation == 'min':
+        return float(np.min(pixels))
+    if aggregation == 'max':
+        return float(np.max(pixels))
+    if aggregation == 'std':
+        return float(np.std(pixels, dtype=float))
+    raise ValueError(f'{aggregation!r} is not a way to make a number of some pixels: {", ".join(AGGREGATIONS)}')
 
 
 def window_mask(axis: np.ndarray, start: float, stop: float) -> np.ndarray:
@@ -59,8 +93,9 @@ def window_mask(axis: np.ndarray, start: float, stop: float) -> np.ndarray:
     return mask
 
 
-def roi_value(axis: np.ndarray, spectrum: np.ndarray, start: float, stop: float) -> float:
-    """The mean of the pixels of a spectrum inside a window
+def roi_value(axis: np.ndarray, spectrum: np.ndarray, start: float, stop: float,
+              aggregation: str = DEFAULT_AGGREGATION) -> float:
+    """An aggregation (the mean by default) of the pixels of a spectrum inside a window
 
     Parameters
     ----------
@@ -68,6 +103,8 @@ def roi_value(axis: np.ndarray, spectrum: np.ndarray, start: float, stop: float)
         The x values of the pixels and their intensity
     start, stop: float
         The window, see :func:`window_mask`
+    aggregation: str
+        One of :data:`AGGREGATIONS`
 
     Returns
     -------
@@ -77,16 +114,18 @@ def roi_value(axis: np.ndarray, spectrum: np.ndarray, start: float, stop: float)
     Raises
     ------
     ValueError
-        if the spectrum and its axis do not have the same number of pixels
+        if the spectrum and its axis do not have the same number of pixels, or `aggregation` is unknown
     """
     axis = np.asarray(axis, dtype=float)
     spectrum = np.asarray(spectrum, dtype=float)
     if axis.shape != spectrum.shape:
         raise ValueError(f'The spectrum has {spectrum.size} pixels but its axis has {axis.size}')
+    if aggregation not in AGGREGATIONS:  # (a mistake, even for a window outside of the spectrum)
+        raise ValueError(f'{aggregation!r} is not a way to make a number of some pixels: {", ".join(AGGREGATIONS)}')
     mask = window_mask(axis, start, stop)
     if not mask.any():
         return float('nan')
-    return float(np.mean(spectrum[mask]))
+    return aggregate(spectrum[mask], aggregation)
 
 
 @dataclass(frozen=True)
@@ -100,15 +139,24 @@ class Roi:
     start, stop: float
         The edges of the window, in the unit of the spectrum axis (nm), ``start <= stop``
     record: bool
-        Whether its value is saved in the file
+        Whether it is saved in the file (its value, or the part of the spectrum if it is a crop)
     plot: bool
-        Whether its value is plotted
+        Whether its value is plotted (a crop has none)
+    aggregation: str
+        What it gives at each measurement: one of :data:`AGGREGATIONS`, the number made of its pixels, or :data:`CROP`, the
+        part of the spectrum its window covers
     """
     name: str
     start: float
     stop: float
     record: bool = True
     plot: bool = True
+    aggregation: str = DEFAULT_AGGREGATION
+
+    @property
+    def is_crop(self) -> bool:
+        """It gives its pixels, not a number"""
+        return self.aggregation == CROP
 
     @property
     def center(self) -> float:
@@ -120,6 +168,8 @@ class Roi:
 
     def problems(self) -> list[str]:
         """What is wrong with this ROI (empty if it is valid)"""
+        if self.aggregation not in MODES:
+            return [f'{self.name}: {self.aggregation!r} is not one of {", ".join(MODES)}']
         if not (math.isfinite(self.start) and math.isfinite(self.stop)):
             return [f'{self.name}: the edges are not finite numbers']
         if self.start > self.stop:
@@ -127,19 +177,25 @@ class Roi:
         return []
 
     def value(self, axis: np.ndarray, spectrum: np.ndarray) -> float:
-        """The mean of the spectrum in this window (nan if it is outside)"""
-        return roi_value(axis, spectrum, self.start, self.stop)
+        """The aggregation of the spectrum in this window (nan if it is outside, and for a crop: it has no value)"""
+        if self.is_crop:
+            return float('nan')
+        return roi_value(axis, spectrum, self.start, self.stop, self.aggregation)
+
+    def mask(self, axis: np.ndarray) -> np.ndarray:
+        """The pixels of a spectrum with this x axis which are in this window (see :func:`window_mask`)"""
+        return window_mask(axis, self.start, self.stop)
 
     def label(self, units: str = 'nm', with_range: bool = False) -> str:
-        """The name, followed by the window if asked: ``ROI 1 (450-455 nm)``"""
+        """The name, followed by what it gives and the window if asked: ``ROI 1 sum (450-455 nm)``"""
         if not with_range:
             return self.name
         suffix = f' {units}' if units else ''
-        return f'{self.name} ({self.start:.6g}-{self.stop:.6g}{suffix})'
+        return f'{self.name} {self.aggregation} ({self.start:.6g}-{self.stop:.6g}{suffix})'
 
     def to_dict(self) -> dict:
         return {'name': self.name, 'start': float(self.start), 'stop': float(self.stop),
-                'record': bool(self.record), 'plot': bool(self.plot)}
+                'record': bool(self.record), 'plot': bool(self.plot), 'aggregation': self.aggregation}
 
     @classmethod
     def from_dict(cls, values: dict) -> 'Roi':
@@ -151,9 +207,11 @@ class Roi:
             if what was saved is not a ROI
         """
         try:
+            aggregation = values.get('aggregation', DEFAULT_AGGREGATION)  # (a file made before it existed has none)
             roi = cls(name=str(values['name']), start=float(values['start']), stop=float(values['stop']),
-                      record=bool(values.get('record', True)), plot=bool(values.get('plot', True)))
-        except (KeyError, TypeError, ValueError) as e:
+                      record=bool(values.get('record', True)), plot=bool(values.get('plot', True)),
+                      aggregation=aggregation if aggregation in MODES else DEFAULT_AGGREGATION)
+        except (AttributeError, KeyError, TypeError, ValueError) as e:
             raise ValueError(f'Not a ROI: {values!r}') from e
         if roi.problems():
             raise ValueError('; '.join(roi.problems()))

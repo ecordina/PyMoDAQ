@@ -15,9 +15,9 @@ Each one is saved, or not, independently of the others:
 ``Unit1_Program``
     the set-point, the cycle and the phase of the temperature ramp (saved with the temperature, if a ramp is run, or
     the temperature held: the phase is then ``hold``)
-``Unit3_Crop1``, ``Unit3_Crop2``...
-    for a camera, the pixels of each ROI which is a crop (not an aggregation of its pixels: see :mod:`.camera`), one
-    image per readout (or every *Crops every* seconds)
+``Unit1_Crop1``, ``Unit1_Crop2``...
+    the pixels of each ROI which is a crop (not an aggregation of its pixels: see :mod:`.rois`, :mod:`.camera`), one
+    part of the spectrum or one image per readout (or every *Crops every* seconds)
 
 All the arrays of a unit are enlarged along a time axis made of the time (epoch seconds) at which each readout
 started: the same for the four groups of a unit.
@@ -241,11 +241,12 @@ class UnitRecording:
         The ROIs of a camera which are saved as images, not as a value: their pixels (names which are all different)
     integration: bool
         The integration (exposure) time of each measurement is saved
-    intensity_units, value_units: str
-        What the detector measures, and the units of the values of the ROIs (per ms if they are divided by the
-        integration time)
-    per_integration: bool
-        The values of the ROIs are divided by the integration time of their measurement
+    intensity_units, value_units, spectrum_units: str
+        What the detector measures, the units of the values of the ROIs (per ms if they are divided by the integration
+        time) and the ones of the full spectra and of the crops of a spectrometer (per ms if they are divided)
+    per_integration, spectrum_per_integration: bool
+        The values of the ROIs, the full spectra and the crops of a spectrometer are divided by the integration time of
+        their measurement
     settings: Parameter
         A copy of the settings of the unit, saved with its groups
     detector_settings, thermostat_settings: Parameter
@@ -278,6 +279,8 @@ class UnitRecording:
     intensity_units: str = 'counts'
     value_units: str = 'counts'
     per_integration: bool = False
+    spectrum_units: str = 'counts'
+    spectrum_per_integration: bool = False
 
     @classmethod
     def from_unit(cls, unit) -> 'UnitRecording':
@@ -302,25 +305,34 @@ class UnitRecording:
                    spectrometer=unit.title, thermostat=thermostat.title if thermostat is not None else '',
                    main=IMAGE if settings.KIND == 'camera' else SPECTRUM, detector_kind=settings.KIND, crops=crops,
                    integration=settings.record_integration, intensity_units=settings.intensity_units,
-                   value_units=settings.value_units, per_integration=settings.per_integration)
+                   value_units=settings.value_units, per_integration=settings.per_integration,
+                   spectrum_units=settings.spectrum_units, spectrum_per_integration=settings.spectrum_per_integration)
 
     @staticmethod
     def _check_crops(unit, crops: list):
-        """A crop which is outside of the image would never give anything to save: the experiment does not start
+        """A crop which is outside of the image (of the spectrum) would never give anything to save: the experiment does
+        not start
 
         Raises
         ------
         ValueError
-            if a crop is outside of the last image
+            if a crop is outside of the last image (spectrum)
         """
-        shape = getattr(getattr(unit, 'spectrum', None), 'shape', None)
-        if not crops or shape is None:
+        spectrum = getattr(unit, 'spectrum', None)
+        if not crops or spectrum is None:
             return
         for roi in crops:
-            if window_ranges(shape, roi.x0, roi.x1, roi.y0, roi.y1) is None:
-                raise ValueError(f'{unit.label}: the crop {roi.name} (x {roi.x0:g}-{roi.x1:g}, y {roi.y0:g}-{roi.y1:g}) '
-                                 f'is outside of the image ({shape[1]} x {shape[0]} pixels): move it, or untick '
-                                 f'its Record box')
+            if hasattr(roi, 'x0'):  # (a rectangle of the image of a camera)
+                shape = spectrum.shape
+                if window_ranges(shape, roi.x0, roi.x1, roi.y0, roi.y1) is None:
+                    raise ValueError(f'{unit.label}: the crop {roi.name} (x {roi.x0:g}-{roi.x1:g}, y {roi.y0:g}-{roi.y1:g}) '
+                                     f'is outside of the image ({shape[1]} x {shape[0]} pixels): move it, or untick '
+                                     f'its Record box')
+            elif not roi.mask(spectrum.x).any():  # (a window of a spectrum)
+                finite = spectrum.x[np.isfinite(spectrum.x)]
+                span = f' ({finite.min():g}-{finite.max():g} {spectrum.units})' if finite.size else ''
+                raise ValueError(f'{unit.label}: the crop {roi.name} ({roi.start:g}-{roi.stop:g} {spectrum.units}) is '
+                                 f'outside of the spectrum{span}: move it, or untick its Record box')
 
     @property
     def titles(self) -> list[str]:
@@ -344,8 +356,50 @@ class UnitRecording:
         return bool(self.titles)
 
 
+def divided_by(array: np.ndarray, integration: float) -> np.ndarray:
+    """The array divided by the integration time (ms); nothing but nan if it is not a time: the arrays of the file stay
+    aligned, and nothing is invented"""
+    array = np.asarray(array, dtype=float)
+    if not (math.isfinite(integration) and integration > 0):
+        return np.full_like(array, np.nan)
+    return array / integration
+
+
+def per_ms(units: str) -> str:
+    """``counts`` -> ``counts/ms``"""
+    return f'{units}/ms' if units else '1/ms'
+
+
+def _spectrum_crop_dtes(recording: UnitRecording, measurement) -> list[DataToExport]:
+    """The part of the spectrum of each crop of a spectrometer, one DataToExport per crop, on the wavelengths of its pixels
+    (divided by the integration time if the spectra are)"""
+    spectrum = measurement.spectrum
+    full = spectrum.dwa
+    x_axis = np.asarray(spectrum.axis.get_data() if spectrum.axis is not None else spectrum.x, dtype=float)
+    units = full.units or recording.intensity_units
+    if recording.spectrum_per_integration:
+        units = per_ms(units)
+    dtes = []
+    for index, roi in enumerate(recording.crops, 1):
+        mask = roi.mask(spectrum.x)
+        if not mask.any() or mask.size != x_axis.size:  # (the spectrum changed since the start)
+            continue
+        data = [np.asarray(array, dtype=float).ravel()[mask] for array in full.data]
+        if recording.spectrum_per_integration:
+            data = [divided_by(array, measurement.integration_time) for array in data]
+        axis = Axis(label=spectrum.axis.label if spectrum.axis is not None else 'pixel',
+                    units=spectrum.axis.units if spectrum.axis is not None else '', data=x_axis[mask], index=0)
+        dwa = DataRaw(roi.name, data=data, axes=[axis], labels=list(full.labels) or None, units=pint_safe(units))
+        dwa.origin = recording.spectrometer
+        dtes.append(DataToExport(crop_title(recording.number, index), data=[dwa]))
+    return dtes
+
+
 def _crop_dtes(recording: UnitRecording, measurement) -> list[DataToExport]:
-    """The pixels of each crop of a camera, one DataToExport per crop (the channels of a color camera are kept)"""
+    """The pixels of each crop, one DataToExport per crop: the part of the spectrum of a spectrometer, the rectangle of the
+    image of a camera (the channels of a color camera are kept)"""
+    if recording.detector_kind != 'camera':
+        return _spectrum_crop_dtes(recording, measurement)
     full = measurement.spectrum.dwa
     dtes = []
     for index, roi in enumerate(recording.crops, 1):
@@ -379,8 +433,12 @@ def build_dtes(recording: UnitRecording, measurement) -> list[DataToExport]:
         dwa = spectrum.dwa.deepcopy()
         dwa.origin = recording.spectrometer
         dwa.name = spectrum.dwa.name.split('/')[-1]
-        if not dwa.units:  # (the plugins do not say what their instrument measures: the user does)
-            dwa.force_units(pint_safe(recording.intensity_units))  # (units_as would convert the numbers)
+        units = dwa.units or recording.intensity_units  # (the plugins do not say what their instrument measures: the user does)
+        if recording.spectrum_per_integration and recording.detector_kind != 'camera':
+            dwa.data = [divided_by(array, measurement.integration_time) for array in dwa.data]
+            units = per_ms(units)
+        if units != dwa.units:
+            dwa.force_units(pint_safe(units))  # (units_as would convert the numbers)
         if spectrum.axis is not None and not [axis for axis in dwa.axes if axis.index == 0]:
             dwa.axes = [spectrum.axis.copy()]  # sent by the plugin only when it changes
         dtes.append(DataToExport(title, data=[dwa]))
@@ -550,6 +608,9 @@ class ThermoSpectroSaver(ExtensionSaver):
             if what == ROIS:
                 h5saver.set_attr(node, 'values_units', recording.value_units)
                 h5saver.set_attr(node, 'per_integration', bool(recording.per_integration))
+            elif what in (SPECTRUM, IMAGE, *crops):  # (what a group of spectra or images holds: divided, or as it came)
+                h5saver.set_attr(node, 'values_units', recording.spectrum_units)
+                h5saver.set_attr(node, 'per_integration', bool(recording.spectrum_per_integration))
             if what == INTEGRATION:
                 h5saver.set_attr(node, 'integration_units', 'ms')
             if what == TEMPERATURE:

@@ -7,7 +7,7 @@ PyMoDAQ files it changes are the two root README files (a note at the top).
 
 | folder | what it is |
 |---|---|
-| `pymodaq_plugins_thermospectro` | the five **applications** (`thermo_2spectro`, `thermo_spectro`, `camera`, `thermo_camera`, `thermo_camera_spectro`): spectrometers and a camera recorded while a thermal controller holds a temperature or runs a ramp, for any length of time; they look for the instruments by themselves; **`lab_export FILE.h5`** makes csv files, tif files (T, C, Y, X) and a text (protocol, observations, units) from the h5 files |
+| `pymodaq_plugins_thermospectro` | the five **applications** (`thermo_2spectro`, `thermo_spectro`, `camera`, `thermo_camera`, `thermo_camera_spectro`): spectrometers and a camera recorded while a thermal controller holds a temperature or runs a ramp, for any length of time; they look for the instruments by themselves; **`lab_export FILE.h5`** makes csv files (the values of the ROIs, the full spectra, the crops), tif files (T, C, Y, X) and a text (protocol, observations, units) from the h5 files |
 | `pymodaq_plugins_quantumnorthwest` | the actuator **QNW_TC** for the Quantum Northwest TC 125 / TC 1 / TC 1B temperature controllers, with a simulator and `qnw_tc_check` (first contact) |
 | `pymodaq_plugins_oceaninsight` | the **Seabreeze** spectrometers (Ocean Insight / Ocean Optics): pyseabreeze by default, several spectrometers at once, dark pixels removed, nm axis |
 | `environments/` | the Python packages of the two computers, and how they differ |

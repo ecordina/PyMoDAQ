@@ -140,6 +140,7 @@ class SpectrumPlot(pg.PlotWidget):
         self._pitch = 0.0  # distance between two pixels
         self._x_range: Optional[tuple[float, float]] = None
         self._regions: dict[str, pg.LinearRegionItem] = {}
+        self._crops: set[str] = set()  # the windows of the ROIs which are a crop: they are dashed
         self._labels: dict[str, pg.InfLineLabel] = {}
         self._updating = False
         self._locked = False
@@ -212,7 +213,13 @@ class SpectrumPlot(pg.PlotWidget):
     def _make_movable(self, region: pg.LinearRegionItem):
         region.setMovable(not self._locked)
 
-    def set_roi(self, key: str, start: float, stop: float, color: str, label: str = ''):
+    @staticmethod
+    def _pen(color: str, crop: bool = False):
+        """The pen of the edges of a window: dashed for a ROI which is a crop (it gives the part of the spectrum, not a
+        number)"""
+        return pg.mkPen(color, width=2, style=QtCore.Qt.PenStyle.DashLine if crop else QtCore.Qt.PenStyle.SolidLine)
+
+    def set_roi(self, key: str, start: float, stop: float, color: str, label: str = '', crop: bool = False):
         """Create or move the window of a ROI, without emitting :attr:`roi_changed`
 
         Parameters
@@ -224,7 +231,10 @@ class SpectrumPlot(pg.PlotWidget):
         color: str
         label: str
             Short text written at the top of the window
+        crop: bool
+            The ROI gives the part of the spectrum it covers: its edges are dashed
         """
+        (self._crops.add if crop else self._crops.discard)(key)
         low, high = (start, stop) if start <= stop else (stop, start)
         missing = max(self._pitch, 1e-12) - (high - low)
         if missing > 0:
@@ -233,7 +243,7 @@ class SpectrumPlot(pg.PlotWidget):
         self._updating = True
         try:
             if region is None:
-                region = RoiRegion(values=(low, high), brush=self._fill(color), pen=pg.mkPen(color, width=2))
+                region = RoiRegion(values=(low, high), brush=self._fill(color), pen=self._pen(color, crop))
                 region.setZValue(-10)
                 if self._x_range is not None:
                     region.setBounds(self._x_range)
@@ -249,7 +259,7 @@ class SpectrumPlot(pg.PlotWidget):
                 region.setRegion((low, high))
                 region.setBrush(self._fill(color))
                 for line in region.lines:
-                    line.setPen(pg.mkPen(color, width=2))
+                    line.setPen(self._pen(color, crop))
                 self._labels[key].setText(label, color=color)
         finally:
             self._updating = False
@@ -261,7 +271,7 @@ class SpectrumPlot(pg.PlotWidget):
             return
         region.setBrush(self._fill(color))
         for line in region.lines:
-            line.setPen(pg.mkPen(color, width=2))
+            line.setPen(self._pen(color, key in self._crops))
         self._labels[key].setColor(color)
 
     def region_color(self, key: str) -> str:
@@ -277,6 +287,7 @@ class SpectrumPlot(pg.PlotWidget):
     def remove_roi(self, key: str):
         region = self._regions.pop(key, None)
         self._labels.pop(key, None)
+        self._crops.discard(key)
         if region is not None:
             self.getPlotItem().removeItem(region)
 

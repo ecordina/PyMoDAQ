@@ -25,7 +25,8 @@ For each spectrometer and for the camera, a *unit*:
 * the **integration (exposure) time** and the **readout time** (1 s by default): the instrument is read out, and a
   measurement recorded, once per readout time;
 * **ROIs**: windows of the spectrum (six by default), rectangles of the image (four), whose value is the mean of their
-  pixels. They are edited on the plot or in the settings and **remembered**: the next log starts with the same ROIs;
+  pixels, or their sum, median, min, max or standard deviation, or the pixels themselves, as a **crop** (you choose for
+  each ROI). They are edited on the plot or in the settings and **remembered**: the next log starts with the same ROIs;
 * the thermal controller **holds a temperature** (*Mode: Hold at a temperature*: set it and log) or **runs a ramp**
   (*Mode: Run a ramp*): the ramp is defined by three of initial value, final value, velocity and duration, followed by a
   wait at the final value, the way back, a wait, repeated as many times as asked (a **cycle of ramps**). **When the ramps
@@ -116,13 +117,16 @@ accepted.
 
 **Per ms of integration** (a box under the readout time): the value of each ROI, of the spectrometers and the aggregated ROIs
 of the camera, is divided by the integration (exposure) time, in ms, of its readout, so that the values (the curves and the
-file) are per ms and do not jump when the time is changed. It cannot be changed during an experiment. The full spectra, the
-images and the crops are saved as they come, with the integration time next to them. ``lab_export`` can divide them too
-(``--per-integration-time``).
+file) are per ms and do not jump when the time is changed. It cannot be changed during an experiment. **Spectra per ms of
+integration** (the box under it, for a spectrometer; **off** by default) does the same for what is saved of the spectrum: each
+full spectrum, and the part of the spectrum of each crop, is divided by the integration time of its readout. It is another
+option, because a full spectrum is the raw measurement: leave it off to keep the spectra as the instrument gave them (the
+integration time is saved next to them). The images and the crops of the camera are always saved as they come. ``lab_export`` can
+divide what was not divided too (``--per-integration-time``).
 
 **Units.** *Intensity unit* (under the readout time, ``counts`` by default) is the unit of what the instrument measures (the
-plugins of the instruments do not say): it is on the axis of the curves and saved with the data; the values divided by the
-integration time are in that unit per ms (``counts/ms``). The temperature is in the unit of its thermal controller, the
+plugins of the instruments do not say): it is on the axis of the curves and saved with the data; what is divided by the
+integration time (the values of the ROIs, the spectra) is in that unit per ms (``counts/ms``). The temperature is in the unit of its thermal controller, the
 integration time in ms, the wavelengths in nm, the time in s: they are all saved with their data and written in the files of
 ``lab_export``.
 
@@ -211,8 +215,8 @@ The ROI manager
 
 The **ROI manager** is the tab next to *Settings* and *Saving*. It has a table for each spectrometer (and one for the camera), one row per ROI:
 its number and color (those of its window on the spectrum), its name, its two edges (*From* and *To*, in the units of
-the spectrum; the four edges of a rectangle for the camera, with its *Value*, see below), the *Record* and *Plot* boxes, and a
-button to delete it.
+the spectrum; the four edges of a rectangle for the camera), its *Value* (what the ROI gives: its mean, its sum... or a crop,
+see below), the *Record* and *Plot* boxes, and a button to delete it.
 
 The wavelengths are always in **nm** (the axis does not switch to *knm* beyond 1000 nm). **The color of a ROI of a
 spectrometer is the color of the light of the wavelength in the middle of its window**: a ROI between 440 and 460 nm is blue
@@ -223,8 +227,19 @@ there still have a color of their own; the colors are lightened on a dark backgr
 could not be seen well. When the spectrum has no wavelengths (pixels), and for the rectangles of a camera, the ROIs have
 the colors of a palette.
 
+**What a ROI of a spectrometer gives** (*Value*, in the manager and in the settings of the ROI, for each ROI) is the same
+choice as for the camera: the **mean** of the pixels of its window (the default), their **sum**, **median**, **min**, **max**
+or **std** (the standard deviation), each a number at each readout, plotted and saved with the temperature and the other ROIs
+(its label in the file says which: ``ROI 1 sum (450-455 nm)``); or **crop**: the window is a part of the spectrum to keep: the
+spectrum in the window, with its wavelengths, is saved at each readout (or every *Crops every* seconds, under *Record to
+disk*), in a group of its own (``Unit1_Crop1``...) and in a csv file of its own once converted, one row per crop and one column
+per wavelength. A crop has nothing to plot (no curve, no button) and its window is drawn with dashed edges. It must be
+inside the spectrum: the experiment does not start otherwise, and says which one is not. A ROI gives one thing: to have a
+window both as a number and as a crop, make two ROIs of the same window. The *Value* cannot be changed during an experiment
+and is remembered with the ROIs (the ROIs saved before it existed give their mean).
+
 * **Set up by hand**: type the edges (Enter, or the arrows, which step by one pixel; the wheel works once the box has
-  the focus) and the name, tick or untick *Record* and *Plot*. An edge typed past the other one pushes it, so a
+  the focus) and the name, choose the *Value*, tick or untick *Record* and *Plot*. An edge typed past the other one pushes it, so a
   window is moved by typing its two edges, whichever way it goes. A window which is entirely outside of the spectrum is
   written in red: its value is empty.
 * **Move**: drag a window, or one of its edges, on the spectrum: its numbers in the manager follow as you go, and the
@@ -294,11 +309,14 @@ single file which needs only ``numpy``, ``h5py`` and ``tifffile``: it can be cop
 The names of the new files start with the one of the h5 file:
 
 * **the values of a spectrometer** and of its thermal controller, ``..._spectrometer1.csv``: one row per readout,
-  ``time (s) | temperature (°C) | integration time (ms) | ROI 1 (450-455 nm) [counts] | ROI 2 ... [counts] | ...`` (the temperature if
-  there is a thermal controller, the integration time if it was saved, each ROI which was recorded; the program of the ramp with
-  ``--program``);
+  ``time (s) | temperature (°C) | integration time (ms) | ROI 1 mean (450-455 nm) [counts] | ROI 2 sum ... [counts] | ...`` (the
+  temperature if there is a thermal controller, the integration time if it was saved, each ROI which was recorded and gives
+  a number, its name saying which one; the program of the ramp with ``--program``);
 * **the full spectra**, if they were saved, in a file of their own, ``..._spectrometer1_spectra.csv``: one row per spectrum,
-  ``time (s) | temperature (°C) | integration time (ms) | 400.123 nm | 400.456 nm | ...`` (one column per wavelength);
+  ``time (s) | temperature (°C) | integration time (ms) | 400.123 nm | 400.456 nm | ...`` (one column per wavelength); and the
+  ROIs which are **crops**, each in a file of its own too, ``..._spectrometer1_crop_<name of the ROI>.csv``: the same, with the
+  wavelengths of the window only. They are kept apart from the values: the csv files of the values are the same whatever
+  was saved of the spectra. The units of the spectra are in the text (``counts``, ``counts/ms`` if they were divided);
 * **the camera**: ``..._camera.csv`` has one row per readout, ``time (s) | temperature (°C) | integration time (ms) | ROI 1 sum (x 10-18,
   y 5-13 pixel) [counts] | ... | tif frame``, with the ROIs which give a number (mean, sum, median, min, max or std, as their name
   says) and, where an image was saved, its frame in the tif; ``..._camera.tif`` has the images (*The full image*) as a time
@@ -317,9 +335,10 @@ is measured: ``[counts]``, or ``[counts/ms]`` for the values which were divided 
 unit you gave; the time is in seconds from the first measurement of the experiment, **the same zero in all the files**
 (``--absolute-time`` for epoch seconds). The csv files are in UTF-8 with a signature, so that Excel shows ``°C``.
 
-Options: ``--per-integration-time`` divides the values of the ROIs and the spectra which were saved as they were measured by
-the integration time of each readout (``counts/ms``; what was divided in the extension is not divided twice, and it says so),
-``--short-names`` (``ROI 1 [counts]`` instead of ``ROI 1 (454.2-464.6 nm) [counts]``), ``--no-spectra``, ``--no-tif``, ``--program`` (the
+Options: ``--per-integration-time`` divides the values of the ROIs, the spectra and the crops of the spectra which were saved as
+they were measured by the integration time of each readout (``counts/ms``; what was divided in the extension is not divided
+twice, and it says so),
+``--short-names`` (``ROI 1 [counts]`` instead of ``ROI 1 mean (454.2-464.6 nm) [counts]``), ``--no-spectra``, ``--no-tif``, ``--program`` (the
 set-point, cycle and phase of the ramp), ``--delimiter``, ``-o FOLDER``, ``--experiment N`` (the experiment of the file, the last one by
 default), ``--with-spectrometers`` (in the csv of the camera, add the temperature and the ROIs of the spectrometers at the readouts of
 the camera: the closest readout of the spectrometer, or ``--interpolate``). The spectra are read from the file a few hundred
@@ -336,10 +355,12 @@ their title (``Detector000``, ``Actuator000``... only number them):
 ====================== ===================================================================================
 ``Unit1_Spectrum``     the full spectra, with their wavelengths (*Unit2_...* for the second spectrometer), every
                        *Full spectrum every* seconds (``Unit3_Image``: the images of the camera)
-``Unit1_ROIs``         one array per recorded ROI, labeled like ``ROI 1 (454.2-464.6 nm)`` (``ROI 1 sum (x 10-18, y 5-13
-                       pixel)`` for a camera), in the unit of the values (``units`` of the arrays, ``values_units`` of the group)
-``Unit3_Crop1``...     for a camera, the pixels of each ROI which is a crop: one image (or several channels) per readout,
-                       with the name and the rectangle of the ROI in the attribute ``roi``
+``Unit1_ROIs``         one array per recorded ROI which gives a number, labeled like ``ROI 1 mean (454.2-464.6 nm)`` (``ROI 1 sum
+                       (x 10-18, y 5-13 pixel)`` for a camera), in the unit of the values (``units`` of the arrays,
+                       ``values_units`` of the group)
+``Unit1_Crop1``...     for each ROI which is a crop: the part of the spectrum of a spectrometer, with its wavelengths, or the
+                       pixels of a camera (one image, or several channels, per readout), with the name and the window of the
+                       ROI in the attribute ``roi``
 ``Unit1_Integration``  the integration (exposure) time of each readout, in ms
 ``Unit1_Temperature``  the measured temperature
 ``Unit1_Program``      the set-point, the cycle and the phase code of the ramp (``phase_codes`` attribute: idle 0,
@@ -352,8 +373,8 @@ their title (``Detector000``, ``Actuator000``... only number them):
 
 The units are kept: the arrays have their ``units`` (the temperature in the unit of the thermal controller, the integration time in
 ms, the values of the ROIs in the intensity unit, ``counts/ms`` if they were divided by the integration time, the full spectra
-and images in the intensity unit) and the groups of the ROIs say so in ``values_units``, ``intensity_units`` and
-``per_integration``.
+and the crops of a spectrometer in the intensity unit, or ``counts/ms`` if they were divided, the images in the intensity unit)
+and the groups say so in ``values_units``, ``intensity_units`` and ``per_integration``.
 
 What was written about the experiment is in the attributes ``experiment_title``, ``sample``, ``operator``, ``protocol`` and
 ``application`` of the group ``RawData`` (written the way PyMoDAQ writes its attributes, as a small json text: the H5 browser

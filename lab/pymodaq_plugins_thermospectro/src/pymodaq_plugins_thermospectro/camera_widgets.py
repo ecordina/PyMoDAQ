@@ -17,14 +17,12 @@ from qtpy import QtCore, QtGui, QtWidgets
 
 from pymodaq_plugins_thermospectro.camera import MODES, RectRoi
 from pymodaq_plugins_thermospectro.roi_manager import (BADGE_WIDTH, CHECK_WIDTH, DELETE_WIDTH, EDGE_WIDTH,
-                                                       EdgeSpinBox, _quietly)
+                                                       VALUE_WIDTH, EdgeSpinBox, _quietly)
 
 #: How the ROIs of a camera are set up, for the user
 HINT = ('Drag a rectangle (or one of its corners) on the image, or type its edges here. Double click on the image, '
         'or right click, to add a ROI there. Value: the number a ROI gives (the mean, sum, median, min, max or std '
         'of its pixels), or crop: its pixels are saved as images (its rectangle is dashed).')
-#: The width of the column of the value (a short word in a drop-down list)
-VALUE_WIDTH = 70
 
 
 class _CameraViewer2D(Viewer2D):

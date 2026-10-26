@@ -16,15 +16,17 @@ from typing import Optional, Sequence
 
 from qtpy import QtCore, QtWidgets
 
-from pymodaq_plugins_thermospectro.rois import Roi
+from pymodaq_plugins_thermospectro.rois import MODES, Roi
 from pymodaq_plugins_thermospectro.widgets import contrast_text
 
 #: How the ROIs are set up, for the user
 HINT = ('Drag a window (or one of its edges) on the spectrum, or type its edges here. Double click on the spectrum, '
-        'or right click, to add a ROI there.')
+        'or right click, to add a ROI there. Value: the number a ROI gives (the mean, sum, median, min, max or std of its '
+        'pixels), or crop: the part of the spectrum in its window is saved (its window is dashed).')
 #: Width of the columns (px), the same for the header and the rows
 BADGE_WIDTH = 26
 EDGE_WIDTH = 80
+VALUE_WIDTH = 70  # (a short word in a drop-down list)
 CHECK_WIDTH = 46
 DELETE_WIDTH = 28
 #: The range of the boxes of the edges: wide, so that a ROI which is outside of the spectrum can still be shown as it is
@@ -71,15 +73,23 @@ class RoiRow(QtWidgets.QWidget):
     edges_edited: Signal(str, float, float)
         The user typed an edge: the key of the ROI and its two edges, in increasing order
     name_edited: Signal(str, str)
+    aggregation_edited: Signal(str, str)
+        The user chose what the ROI gives: one of :data:`~.rois.MODES`
     record_toggled: Signal(str, bool)
     plot_toggled: Signal(str, bool)
     delete_clicked: Signal(str)
     """
     edges_edited = QtCore.Signal(str, float, float)
     name_edited = QtCore.Signal(str, str)
+    aggregation_edited = QtCore.Signal(str, str)
     record_toggled = QtCore.Signal(str, bool)
     plot_toggled = QtCore.Signal(str, bool)
     delete_clicked = QtCore.Signal(str)
+
+    VALUE_TIP = ('What this ROI gives at each measurement: one number made of its pixels (mean, sum, median, min, max, '
+                 'std: the standard deviation), or crop: the part of the spectrum in its window, saved with each '
+                 'measurement (a csv file of its own), with nothing to plot')
+    PLOT_TIP = 'Show the value of this ROI in the plot (what is recorded does not change)'
 
     def __init__(self, key: str, parent=None):
         super().__init__(parent)
@@ -100,10 +110,14 @@ class RoiRow(QtWidgets.QWidget):
         self.stop = EdgeSpinBox()
         self.start.setToolTip('Lower edge of the window')
         self.stop.setToolTip('Upper edge of the window')
+        self.aggregation = QtWidgets.QComboBox()
+        self.aggregation.addItems(MODES)
+        self.aggregation.setFixedWidth(VALUE_WIDTH)
+        self.aggregation.setToolTip(self.VALUE_TIP)
         self.record = QtWidgets.QCheckBox()
-        self.record.setToolTip('Save the value of this ROI (the mean of its pixels) at each measurement')
+        self.record.setToolTip('Save this ROI at each measurement: its value, or the part of the spectrum if it is a crop')
         self.plot = QtWidgets.QCheckBox()
-        self.plot.setToolTip('Show this ROI in the plot (what is recorded does not change)')
+        self.plot.setToolTip(self.PLOT_TIP)
         self.delete = QtWidgets.QToolButton()
         self.delete.setText('✕')
         self.delete.setToolTip('Delete this ROI')
@@ -116,6 +130,7 @@ class RoiRow(QtWidgets.QWidget):
         layout.addWidget(self.name, 1)
         layout.addWidget(self.start)
         layout.addWidget(self.stop)
+        layout.addWidget(self.aggregation)
         for box in (self.record, self.plot):
             cell = QtWidgets.QWidget()
             cell.setFixedWidth(CHECK_WIDTH)
@@ -128,6 +143,8 @@ class RoiRow(QtWidgets.QWidget):
         self.name.editingFinished.connect(self._name_finished)
         self.start.valueChanged.connect(self._start_changed)
         self.stop.valueChanged.connect(self._stop_changed)
+        self.aggregation.activated.connect(
+            lambda _=0: self.aggregation_edited.emit(self.key, self.aggregation.currentText()))
         self.record.toggled.connect(lambda checked: self.record_toggled.emit(self.key, checked))
         self.plot.toggled.connect(lambda checked: self.plot_toggled.emit(self.key, checked))
         self.delete.clicked.connect(lambda _=False: self.delete_clicked.emit(self.key))
@@ -196,9 +213,15 @@ class RoiRow(QtWidgets.QWidget):
             box.setToolTip('This window is outside of the spectrum: its value is empty'
                            if outside else ('Lower edge of the window' if box is self.start
                                             else 'Upper edge of the window'))
-        for box, value in ((self.record, roi.record), (self.plot, roi.plot)):
+        if self.aggregation.currentText() != roi.aggregation:
+            _quietly(self.aggregation, self.aggregation.setCurrentText, roi.aggregation)
+        # (a crop has no value to plot: its box is off and cannot be ticked until it is an aggregation again)
+        for box, value in ((self.record, roi.record), (self.plot, roi.plot and not roi.is_crop)):
             if box.isChecked() != bool(value):
                 _quietly(box, box.setChecked, bool(value))
+        self.plot.setEnabled(not roi.is_crop)
+        self.plot.setToolTip('A crop has no value to plot: the part of the spectrum is saved' if roi.is_crop
+                             else self.PLOT_TIP)
 
     def set_color(self, color: str):
         """The color of the number of the ROI (and the one of its text, which must be read on it)"""
@@ -217,7 +240,7 @@ class RoiRow(QtWidgets.QWidget):
     def set_locked(self, locked: bool):
         """What is plotted can still be changed, the rest cannot"""
         self._locked = locked
-        for widget in (self.name, self.start, self.stop, self.record, self.delete):
+        for widget in (self.name, self.start, self.stop, self.aggregation, self.record, self.delete):
             widget.setEnabled(not locked)
 
 
@@ -229,6 +252,7 @@ class RoiManager(QtWidgets.QWidget):
     edges_edited: Signal(str, float, float)
         The user typed an edge of a ROI: its key and its two edges, in increasing order
     name_edited: Signal(str, str)
+    aggregation_edited: Signal(str, str)
     record_toggled: Signal(str, bool)
     plot_toggled: Signal(str, bool)
     delete_clicked: Signal(str)
@@ -238,6 +262,7 @@ class RoiManager(QtWidgets.QWidget):
     """
     edges_edited = QtCore.Signal(str, float, float)
     name_edited = QtCore.Signal(str, str)
+    aggregation_edited = QtCore.Signal(str, str)
     record_toggled = QtCore.Signal(str, bool)
     plot_toggled = QtCore.Signal(str, bool)
     delete_clicked = QtCore.Signal(str)
@@ -264,8 +289,9 @@ class RoiManager(QtWidgets.QWidget):
         header.setContentsMargins(0, 0, 0, 0)
         header.setSpacing(4)
         for name, text, width in (('badge', '#', BADGE_WIDTH), ('name', 'Name', 0), ('start', 'From', EDGE_WIDTH),
-                                  ('stop', 'To', EDGE_WIDTH), ('record', 'Record', CHECK_WIDTH),
-                                  ('plot', 'Plot', CHECK_WIDTH), ('delete', '', DELETE_WIDTH)):
+                                  ('stop', 'To', EDGE_WIDTH), ('aggregation', 'Value', VALUE_WIDTH),
+                                  ('record', 'Record', CHECK_WIDTH), ('plot', 'Plot', CHECK_WIDTH),
+                                  ('delete', '', DELETE_WIDTH)):
             label = QtWidgets.QLabel(text)
             align = {'name': QtCore.Qt.AlignmentFlag.AlignLeft, 'start': QtCore.Qt.AlignmentFlag.AlignRight,
                      'stop': QtCore.Qt.AlignmentFlag.AlignRight}.get(name, QtCore.Qt.AlignmentFlag.AlignHCenter)
@@ -277,7 +303,9 @@ class RoiManager(QtWidgets.QWidget):
                 label.setFixedWidth(width)
             header.addWidget(label, 0 if width else 1)
             self._labels[name] = label
-        self._labels['record'].setToolTip('Save the value of the ROI at each measurement')
+        self._labels['aggregation'].setToolTip(RoiRow.VALUE_TIP)
+        self._labels['record'].setToolTip('Save the ROI at each measurement: its value, or the part of the spectrum '
+                                          'if it is a crop')
         self._labels['plot'].setToolTip('Show the ROI in the plot')
 
         self._body = QtWidgets.QWidget()
@@ -310,13 +338,14 @@ class RoiManager(QtWidgets.QWidget):
         return self._rows[key]
 
     def header_text(self, column: str) -> str:
-        """The title of a column: ``name``, ``start`` (From), ``stop`` (To), ``record``, ``plot``"""
+        """The title of a column: ``name``, ``start`` (From), ``stop`` (To), ``aggregation`` (Value), ``record``, ``plot``"""
         return self._labels[column].text()
 
     def _new_row(self, key: str) -> RoiRow:
         row = RoiRow(key)
         row.edges_edited.connect(self.edges_edited)
         row.name_edited.connect(self.name_edited)
+        row.aggregation_edited.connect(self.aggregation_edited)
         row.record_toggled.connect(self.record_toggled)
         row.plot_toggled.connect(self.plot_toggled)
         row.delete_clicked.connect(self.delete_clicked)

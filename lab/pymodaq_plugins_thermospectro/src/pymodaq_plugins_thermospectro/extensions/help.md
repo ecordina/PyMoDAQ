@@ -35,8 +35,8 @@ one unit drives it (*Drive it*), the other only records its temperature.
 
 ## The ROIs
 
-A ROI (region of interest) is a window of the spectrum; its value is **the mean of the pixels in the window**.
-Each spectrometer starts with **six ROIs**, picked at random (always the same ones). They are drawn on the spectrum
+A ROI (region of interest) is a window of the spectrum; its value is **the mean of the pixels in the window**, or whatever
+you choose for it (see *Value* below). Each spectrometer starts with **six ROIs**, picked at random (always the same ones). They are drawn on the spectrum
 and listed in the **ROI manager**, the tab next to the settings, with a table for each spectrometer:
 
 * **type** the name and the two edges of a window (*From*, *To*): Enter, or the arrows, which step by one pixel. An
@@ -57,11 +57,22 @@ is plain json: it can be copied to another computer.
 Each ROI has two boxes: **Record** (its value is saved in the file) and **Plot** (it is drawn). They are
 independent. The buttons above the plot of the ROIs do the same as *Plot*.
 
+Each ROI has a **Value** too (in the ROI manager, and in the settings of the ROI), **what the ROI gives**: the **mean** of the
+pixels of its window (the default), their **sum**, **median**, **min**, **max** or **std** (standard deviation), each a number at
+each readout, plotted and saved with the temperature (the label of the ROI in the file says which: `ROI 1 sum (450-455 nm)`); or
+**crop**: the window is a part of the spectrum to keep, the spectrum in the window (with its wavelengths) is saved at each
+readout (or every *Crops every* seconds, under *Record to disk*) in a group of its own, `Unit1_Crop1`..., and in a csv file of its
+own once converted. A crop has nothing to plot (no curve, no button) and its window is drawn with dashed edges; it must be inside
+the spectrum (otherwise the experiment does not start). The *Value* is remembered with the ROIs and cannot be changed during an
+experiment. A ROI gives one thing: for a number and a crop of the same window, make two ROIs.
+
 **Per ms of integration** (under the readout time of the spectrometer): the value of each ROI is divided by the integration time,
 in ms, of its readout: the curves and the file are then per ms (`counts/ms`) and do not jump when the integration time is
-changed during the experiment. **Intensity unit** (`counts` by default) is the unit of what the instrument measures, which its
-plugin does not say: it is on the axis of the curves and saved with the data. Neither can be changed during an experiment (the
-integration time can: see below).
+changed during the experiment. **Spectra per ms of integration** (the next box, **off** by default) divides in the same way what
+is saved of the spectrum: each full spectrum and the part of the spectrum of each crop; it is a separate option because a full
+spectrum is the raw measurement (the integration time is saved next to it). **Intensity unit** (`counts` by default) is the unit
+of what the instrument measures, which its plugin does not say: it is on the axis of the curves and saved with the data. None of
+them can be changed during an experiment (the integration time can: see below).
 
 The wavelengths of a spectrometer are always in **nm** (the axis does not switch to *knm* beyond 1000 nm). The **color of
 a ROI** is the color of the light at the wavelength in the middle of its window: a ROI between 440 and 460 nm is blue (450
@@ -193,7 +204,7 @@ with h5py.File('Dataset_20261022_153012.h5', 'r', swmr=True) as f:
 
 The file has one group `Datalogger000`, and in it one group per kind of data, found by its title (the names
 `Detector000`... only number them): `Unit1_Spectrum`, `Unit1_ROIs`, `Unit1_Integration`, `Unit1_Temperature`, `Unit1_Program` (and
-`Unit2_...`, and `Unit3_Image`, `Unit3_ROIs`, `Unit3_Crop1`... for the camera: the pixels of each ROI which is a crop). Their arrays are enlarged along a time axis (epoch seconds, **the same for the groups of a unit**, it is
+`Unit2_...`, and `Unit3_Image`, `Unit3_ROIs`... for the camera; `Unit1_Crop1`... are the ROIs which are crops: the part of the spectrum, or the pixels of the camera). Their arrays are enlarged along a time axis (epoch seconds, **the same for the groups of a unit**, it is
 the time at which the readout started); the attributes of the groups tell the spectrometer and the thermostat, the
 integration and readout times and, for the ROIs, their windows. The codes of `Unit1_Program` phases are in its
 `phase_codes` attribute. The file can be loaded with the H5 browser or `pymodaq_data.h5modules.data_saving.DataLoader`.
@@ -205,17 +216,19 @@ small json text: the H5 browser and the converter below decode it). The observat
 `text` (utf-8).
 
 **The units are kept**: the arrays have their `units` (the temperature, the integration time in ms, the values of the ROIs in
-the intensity unit, per ms if they were divided by the integration time, the full spectra and images in the intensity unit),
-and the groups of the ROIs say it in `values_units`, `intensity_units` and `per_integration`.
+the intensity unit, per ms if they were divided by the integration time, the full spectra and the crops of a spectrometer in
+the intensity unit, or per ms if they were divided, the images in the intensity unit), and the groups say it in `values_units`,
+`intensity_units` and `per_integration`.
 
 **csv, tif and text files**: the command `lab_export FILE.h5` (see `lab_apps`) turns the file into
-`FILE_spectrometer1.csv` (`time (s) | temperature (°C) | integration time (ms) | ROI 1 [counts] | ...`, one row per readout),
-`FILE_spectrometer1_spectra.csv` (the full spectra, one row each, one column per wavelength), `FILE_camera.csv` (the ROIs of the
+`FILE_spectrometer1.csv` (`time (s) | temperature (°C) | integration time (ms) | ROI 1 mean (450-455 nm) [counts] | ...`, one row
+per readout), `FILE_spectrometer1_spectra.csv` (the full spectra, one row each, one column per wavelength),
+`FILE_spectrometer1_crop_<name>.csv` (the part of the spectrum of each crop, the same), `FILE_camera.csv` (the ROIs of the
 camera which are numbers, with the frame of the tif where there is an image), `FILE_camera.tif` (the images, axes T, C, Y, X),
 `FILE_camera_crop_<name>.tif` (the pixels of each crop), and `FILE_experiment.txt` (the title, the sample, the operator, the
 protocol, the observations with their time, the instruments, the ROIs, the units and the files; the observations are also in
 `FILE_notes.csv`). The time is in seconds from the first measurement, the same zero everywhere; `--per-integration-time` divides
-the values and the spectra by the integration time of each readout; `--list` tells what a file holds; `--help` has the rest.
+the values, the spectra and the crops of the spectra by the integration time of each readout (not twice what was divided already); `--list` tells what a file holds; `--help` has the rest.
 
 ## Safety
 

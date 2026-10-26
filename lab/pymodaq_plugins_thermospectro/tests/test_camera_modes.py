@@ -223,13 +223,9 @@ class TestSettingsOfACamera:
 
         assert settings.crop_interval == 0.0
 
-    def test_a_spectrometer_has_no_crop(self, qapp):
-        from pymodaq_plugins_thermospectro.rois import default_rois
-        from pymodaq_plugins_thermospectro.unit_settings import UnitSettings
-        settings = UnitSettings(Parameter.create(**unit_definition(1, default_rois(1))), 1)
-
-        assert settings.crop_interval == 0.0 and 'crop_interval' not in settings.child('record').names
-        assert 'aggregation' not in settings.child('rois', 'roi00').names
+    def test_the_options_of_the_spectra_are_not_the_ones_of_a_camera(self, settings):
+        assert 'spectrum_per_integration' not in settings.param.names  # (the images are saved as they come)
+        assert not settings.spectrum_per_integration and settings.spectrum_units == 'counts'
 
 
 @pytest.fixture

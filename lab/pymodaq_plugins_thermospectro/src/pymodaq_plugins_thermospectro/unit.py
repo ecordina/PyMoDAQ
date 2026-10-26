@@ -560,6 +560,9 @@ class Unit(QtCore.QObject):
         values = []
         spectrum = self.spectrum
         for roi in rois:
+            if roi.is_crop:  # (no value: the part of the spectrum is saved)
+                values.append(math.nan)
+                continue
             try:
                 values.append(roi.value(spectrum.x, spectrum.y))
             except ValueError as e:

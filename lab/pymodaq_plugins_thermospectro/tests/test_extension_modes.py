@@ -1,16 +1,19 @@
 """The extension on Mock modules: the integration time (saved, changed during an experiment, dividing the values), the
-units, and the ROIs of a camera which are a crop or give another aggregation than the mean"""
+units, the ROIs of a camera or of a spectrometer which are a crop or give another aggregation than the mean, and the full
+spectra divided by the integration time"""
 import json
 
 import h5py
+import numpy as np
 import pytest
 from qtpy import QtCore
 
 from pymodaq_plugins_thermospectro.camera import CROP, MODES, RectRoi
+from pymodaq_plugins_thermospectro.rois import Roi
 from pymodaq_plugins_thermospectro import export
 
 from test_export import read_csv
-from test_extension import H5Experiment, end_run, run, ui_enabled, wait_for
+from test_extension import H5Experiment, end_run, run, ui_enabled, wait_for, wait_for_end
 
 pytestmark = pytest.mark.filterwarnings('ignore')
 
@@ -258,3 +261,226 @@ class TestCropsOfACamera:
             assert not ext.view(3).manager.row('roi00').aggregation.isEnabled()
         finally:
             end_run(qtbot, ext)
+
+
+class TestValuesAndCropsOfASpectrometer:
+    """The first spectrometer of the Mock modules: ROIs of 10 nm each 50 nm, from 50 to 300 nm of the Mock spectrum"""
+
+    AGGREGATIONS = {'mean': np.mean, 'sum': np.sum, 'median': np.median, 'min': np.min, 'max': np.max, 'std': np.std}
+
+    def choose(self, ext, key, aggregation, number=1):
+        row = ext.view(number).manager.row(key)
+        row.aggregation.setCurrentIndex(MODES.index(aggregation))
+        row.aggregation.activated.emit(MODES.index(aggregation))  # (what a click on the list does)
+
+    def test_the_value_of_a_roi_is_chosen_in_the_manager(self, ext):
+        self.choose(ext, 'roi00', 'sum')
+        self.choose(ext, 'roi01', CROP)
+
+        settings = ext.unit(1).settings
+        assert settings.roi('roi00').aggregation == 'sum' and settings.roi('roi01').is_crop
+        assert settings.child('rois', 'roi00', 'aggregation').value() == 'sum'
+        assert ext.unit(2).settings.roi('roi00').aggregation == 'mean'  # (the other spectrometer is not touched)
+
+    def test_a_choice_in_the_tree_is_shown_in_the_manager(self, ext):
+        ext.unit(1).settings.child('rois', 'roi02', 'aggregation').setValue('std')
+
+        assert ext.view(1).manager.row('roi02').aggregation.currentText() == 'std'
+
+    def test_the_value_is_remembered_with_the_rois(self, ext, tmp_path):
+        self.choose(ext, 'roi01', 'median')
+        ext.save_rois()
+
+        saved = json.loads((tmp_path / 'remembered' / 'rois.json').read_text())['units']['unit1']['rois']
+
+        assert [roi['aggregation'] for roi in saved][:2] == ['mean', 'median']
+
+    def test_a_crop_has_no_curve_but_a_dashed_window(self, ext):
+        self.choose(ext, 'roi01', CROP)
+
+        view = ext.view(1)
+        assert len(view.curves_plot.curves) == 5 and 'roi01' not in view.toggles.names
+        lines = view.spectrum_plot._regions['roi01'].lines
+        assert all(line.pen.style() == QtCore.Qt.PenStyle.DashLine for line in lines)
+
+    def test_the_curves_start_again_with_the_other_values(self, ext, qtbot):
+        ext.start_monitoring()
+        wait_for(qtbot, lambda: len(ext.unit(1).series_rois) >= 3)
+
+        self.choose(ext, 'roi00', 'max')
+
+        assert len(ext.unit(1).series_rois) < 3  # (what was drawn was the mean)
+        ext.stop_monitoring()
+
+    def test_each_aggregation_is_the_one_of_the_saved_spectrum_in_the_window(self, ext, qtbot, tmp_path):
+        for index, aggregation in enumerate(self.AGGREGATIONS):
+            self.choose(ext, f'roi{index:02d}', aggregation)
+
+        run(qtbot, ext)
+        wait_for_end(qtbot, ext)
+
+        with H5Experiment(tmp_path) as saved:
+            wavelengths, spectra = saved.wavelengths('Unit1_Spectrum'), saved.spectra('Unit1_Spectrum')
+            assert saved.n_zero_d('Unit1_ROIs') == 6
+            for index, (roi, (aggregation, function)) in enumerate(zip(ext.unit(1).settings.rois,
+                                                                       self.AGGREGATIONS.items())):
+                mask = (wavelengths >= roi.start) & (wavelengths <= roi.stop)
+                assert mask.any()
+                assert saved.zero_d('Unit1_ROIs', index) == pytest.approx(function(spectra[:, mask], axis=1), rel=1e-5)
+                assert saved.label('Unit1_ROIs', index) == f'{roi.name} {aggregation} ({roi.start:g}-{roi.stop:g} nm)'
+            assert saved.n_zero_d('Unit2_ROIs') == 6 and saved.label('Unit2_ROIs', 1) == 'ROI 2 mean (100-110 nm)'
+
+    def test_the_crops_are_saved_as_spectra_and_the_values_with_their_aggregation(self, ext, qtbot, tmp_path):
+        self.choose(ext, 'roi00', 'sum')
+        self.choose(ext, 'roi01', CROP)
+
+        run(qtbot, ext, **SLOW)
+        wait_for(qtbot, lambda: ext.unit(1).n_measurements >= 4)
+        end_run(qtbot, ext)
+
+        with H5Experiment(tmp_path) as experiment:
+            assert 'Unit1_Crop1' in experiment.titles and 'Unit1_ROIs' in experiment.titles
+            labels = [experiment.label('Unit1_ROIs', index) for index in range(experiment.n_zero_d('Unit1_ROIs'))]
+            assert len(labels) == 5 and labels[0] == 'ROI 1 sum (50-60 nm)' and labels[1] == 'ROI 3 mean (150-160 nm)'
+            window = experiment.modules['Unit1_Crop1']['Data1D']['CH00']
+            spectra, wavelengths = window['EnlData00'][:], window['Axis00'][:]
+            assert spectra.ndim == 2 and spectra.shape[1] == wavelengths.size >= 2 and spectra.shape[0] >= 3
+            assert wavelengths.min() >= 100. and wavelengths.max() <= 110.  # (ROI 2: 100-110 nm)
+            assert spectra.shape[0] == len(experiment.time('Unit1_Crop1'))
+            roi = json.loads(experiment.attribute('Unit1_Crop1', 'roi'))
+            assert roi['name'] == 'ROI 2' and roi['aggregation'] == CROP
+            full_wavelengths = experiment.wavelengths('Unit1_Spectrum')
+            assert np.array_equal(full_wavelengths[(full_wavelengths >= 100.) & (full_wavelengths <= 110.)], wavelengths)
+            assert 'Unit2_Crop1' not in experiment.titles  # (the other spectrometer has none)
+
+    def test_the_converter_makes_a_csv_of_the_crop_and_a_csv_of_the_values(self, ext, qtbot, tmp_path):
+        self.choose(ext, 'roi00', 'max')
+        self.choose(ext, 'roi01', CROP)
+        ext.unit(1).settings.child('record', 'integration_time').setValue(True)
+        run(qtbot, ext, **SLOW)
+        wait_for(qtbot, lambda: ext.unit(1).n_measurements >= 4)
+        end_run(qtbot, ext)
+        path = next((tmp_path / 'data').rglob('*.h5'))
+
+        assert export.main([str(path), '-o', str(tmp_path / 'out')]) == 0
+
+        out = tmp_path / 'out'
+        header, rows = read_csv(out / f'{path.stem}_spectrometer1_crop_ROI_2.csv')
+        assert header[0] == 'time (s)' and header[1].startswith('temperature') and header[2] == 'integration time (ms)'
+        assert len(header) > 4 and all(name.endswith(' nm') for name in header[3:]) and len(rows) >= 3
+        assert all(100. <= float(name.split()[0]) <= 110. for name in header[3:])
+        assert {row[2] for row in rows} == {20.}
+        values = read_csv(out / f'{path.stem}_spectrometer1.csv')[0]
+        assert any(name.startswith('ROI 1 max (50-60 nm)') for name in values)
+        assert not any('ROI 2' in name for name in values)  # (a crop has no column of values)
+        text = (out / f'{path.stem}_experiment.txt').read_text(encoding='utf-8-sig')
+        assert 'ROI 2: crop of the spectrum in 100-110 nm' in text
+        assert 'ROI 1: maximum of the pixels in 50-60 nm' in text
+
+    @pytest.mark.errors_expected
+    def test_a_crop_outside_of_the_spectrum_stops_the_experiment_from_starting(self, ext, qtbot, tmp_path):
+        ext.unit(1).settings.set_rois([Roi('Far', 5000., 5100., aggregation=CROP)])
+        ext._rois_changed(ext.unit(1), reset=True)
+
+        ext.start_run()
+        wait_for(qtbot, lambda: bool(ext.notifications))
+
+        assert not ext.run_active
+        title, text, error = ext.notifications[-1]
+        assert title == 'Cannot start' and 'the crop Far' in text and 'is outside of the spectrum' in text
+
+    def test_the_crops_can_be_saved_less_often(self, ext, qtbot, tmp_path):
+        self.choose(ext, 'roi01', CROP)
+        ext.unit(1).settings.child('record', 'crop_interval').setValue(0.5)
+
+        run(qtbot, ext, **SLOW)
+        wait_for(qtbot, lambda: ext.unit(1).n_measurements >= 16)
+        end_run(qtbot, ext)
+
+        with H5Experiment(tmp_path) as experiment:
+            readouts, crops = len(experiment.time('Unit1_ROIs')), len(experiment.time('Unit1_Crop1'))
+            assert 2 <= crops < readouts  # (a readout every 0.1 s, a crop every 0.5 s)
+
+    def test_the_value_and_the_interval_cannot_be_changed_during_an_experiment(self, ext, qtbot):
+        run(qtbot, ext, **SLOW)
+        try:
+            settings = ext.unit(1).settings
+            assert not ui_enabled(settings.child('rois', 'roi00', 'aggregation'))
+            assert not ui_enabled(settings.child('record', 'crop_interval'))
+            assert not ui_enabled(settings.child('spectrum_per_integration'))
+            assert not ext.view(1).manager.row('roi00').aggregation.isEnabled()
+            assert not ext.view(2).manager.row('roi00').aggregation.isEnabled()
+        finally:
+            end_run(qtbot, ext)
+        assert ext.view(1).manager.row('roi00').aggregation.isEnabled()
+
+
+class TestFullSpectraDividedByTheIntegrationTime:
+    def test_they_are_not_unless_it_is_asked(self, ext):
+        assert not any(unit.settings.spectrum_per_integration for unit in ext.units[:2])
+
+    def test_the_option_is_in_the_tree_of_a_spectrometer_only(self, ext):
+        assert ext.unit(1).settings.child('spectrum_per_integration').title() == 'Spectra per ms of integration:'
+
+    def test_changing_it_does_not_restart_the_curves_of_the_values(self, ext, qtbot):
+        ext.start_monitoring()
+        wait_for(qtbot, lambda: len(ext.unit(1).series_rois) >= 3)
+        n = len(ext.unit(1).series_rois)
+
+        ext.unit(1).settings.child('spectrum_per_integration').setValue(True)
+
+        assert len(ext.unit(1).series_rois) >= n  # (the curves are the values of the ROIs: another option)
+        ext.stop_monitoring()
+
+    def test_the_file_says_it(self, ext, qtbot, tmp_path):
+        record_integration(ext)
+        ext.unit(1).settings.child('spectrum_per_integration').setValue(True)
+        ext.unit(1).settings.child('rois', 'roi01', 'aggregation').setValue(CROP)
+
+        run(qtbot, ext, **SLOW)
+        wait_for(qtbot, lambda: all(unit.n_measurements >= 2 for unit in ext.units[:2]))
+        end_run(qtbot, ext)
+
+        with H5Experiment(tmp_path) as experiment:
+            for title in ('Unit1_Spectrum', 'Unit1_Crop1'):
+                assert experiment.attribute(title, 'values_units') == 'counts/ms'
+                assert experiment.attribute(title, 'per_integration') in (True, 'True')
+                assert experiment.attribute(title, 'intensity_units') == 'counts'
+            assert experiment.attribute('Unit1_ROIs', 'values_units') == 'counts'  # (the values of the ROIs: the other option)
+            assert experiment.attribute('Unit2_Spectrum', 'values_units') == 'counts'  # (the other spectrometer)
+
+    def test_the_values_of_the_rois_follow_their_own_option(self, ext, qtbot, tmp_path):
+        record_integration(ext)
+        ext.unit(1).settings.child('per_integration').setValue(True)
+        ext.unit(2).settings.child('spectrum_per_integration').setValue(True)
+
+        run(qtbot, ext, **SLOW)
+        wait_for(qtbot, lambda: all(unit.n_measurements >= 2 for unit in ext.units[:2]))
+        end_run(qtbot, ext)
+
+        with H5Experiment(tmp_path) as experiment:
+            assert experiment.attribute('Unit1_ROIs', 'values_units') == 'counts/ms'
+            assert experiment.attribute('Unit1_Spectrum', 'values_units') == 'counts'
+            assert experiment.attribute('Unit2_ROIs', 'values_units') == 'counts'
+            assert experiment.attribute('Unit2_Spectrum', 'values_units') == 'counts/ms'
+
+    def test_the_converter_does_not_divide_a_second_time(self, ext, qtbot, tmp_path, capsys):
+        record_integration(ext)
+        ext.unit(1).settings.child('spectrum_per_integration').setValue(True)
+        run(qtbot, ext, **SLOW)
+        wait_for(qtbot, lambda: all(unit.n_measurements >= 3 for unit in ext.units[:2]))
+        end_run(qtbot, ext)
+        path = next((tmp_path / 'data').rglob('*.h5'))
+
+        assert export.main([str(path), '-o', str(tmp_path / 'as_saved')]) == 0
+        assert export.main([str(path), '-o', str(tmp_path / 'divided'), '--per-integration-time']) == 0
+
+        def spectra(folder, number):
+            header, rows = read_csv(tmp_path / folder / f'{path.stem}_spectrometer{number}_spectra.csv')
+            columns = [index for index, name in enumerate(header) if name.endswith(' nm')]
+            assert columns and len(rows) >= 2
+            return np.array([[row[index] for index in columns] for row in rows])
+
+        assert np.allclose(spectra('as_saved', 1), spectra('divided', 1), rtol=1e-4, atol=1e-9)  # (it was divided already)
+        assert np.allclose(spectra('as_saved', 2) / 20., spectra('divided', 2), rtol=1e-4, atol=1e-9)  # (this one was not)
+        assert 'divided by the integration time when they were measured' in capsys.readouterr().err

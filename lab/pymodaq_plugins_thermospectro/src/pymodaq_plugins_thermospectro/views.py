@@ -40,8 +40,8 @@ class UnitView(QtCore.QObject):
         The user clicked a button (or a box of the ROI manager): the number of the unit, the name of the ROI (or
         ``temperature``), plotted or not
     roi_field_edited: Signal(int, str, str, object)
-        The user changed the ``name`` or the ``record`` box of a ROI in the ROI manager: the number of the unit, the
-        name of the ROI, the field and its new value
+        The user changed the ``name``, the ``aggregation`` (*Value*) or the ``record`` box of a ROI in the ROI manager: the
+        number of the unit, the name of the ROI, the field and its new value
     add_clicked: Signal(int)
         The user clicked *Add a ROI* in the ROI manager
     delete_requested: Signal(int, str)
@@ -84,6 +84,8 @@ class UnitView(QtCore.QObject):
         self.manager = self._make_manager()
         self._connect_manager()
         self.manager.name_edited.connect(lambda key, name: self.roi_field_edited.emit(self.number, key, 'name', name))
+        self.manager.aggregation_edited.connect(
+            lambda key, aggregation: self.roi_field_edited.emit(self.number, key, 'aggregation', aggregation))
         self.manager.record_toggled.connect(
             lambda key, record: self.roi_field_edited.emit(self.number, key, 'record', record))
         self.manager.plot_toggled.connect(lambda key, plotted: self.plot_toggled.emit(self.number, key, plotted))
@@ -177,16 +179,25 @@ class UnitView(QtCore.QObject):
 
     @staticmethod
     def plottable(roi) -> bool:
-        """The ROI has a value to plot"""
-        return True
+        """The ROI has a value to plot (a crop gives the part of the spectrum, or of the image, which is saved)"""
+        return not roi.is_crop
+
+    #: How each aggregation is called in the label of the axis
+    VALUE_NAMES = {'mean': 'mean', 'sum': 'sum', 'median': 'median', 'min': 'minimum', 'max': 'maximum',
+                   'std': 'standard deviation'}
 
     def curve_name(self, roi, plotted) -> str:
-        """What the legend says of a curve (`plotted`: the ROIs which have one)"""
-        return roi.label(self.unit.axis_units)
+        """The name of the ROI, and its aggregation if the curves do not all have the same one"""
+        if len({other.aggregation for other in plotted}) > 1:
+            return f'{roi.name} ({roi.aggregation})'
+        return roi.name
 
     def value_label(self, plotted) -> tuple[str, str]:
         """What the axis of the curves says they are, and their units"""
-        return 'ROIs: mean of the pixels', self.unit.value_units
+        kinds = {roi.aggregation for roi in plotted}
+        if len(kinds) > 1:
+            return 'ROIs: see the legend', self.unit.value_units
+        return f'ROIs: {self.VALUE_NAMES[kinds.pop()] if kinds else "mean"} of the pixels', self.unit.value_units
 
     def _update_roi_widgets(self, keys, rois):
         """The windows on the spectrum and the table of the ROI manager"""
@@ -197,7 +208,7 @@ class UnitView(QtCore.QObject):
                 plot.remove_roi(key)
         colors = self.roi_colors(rois)
         for index, (key, roi) in enumerate(zip(keys, rois)):
-            plot.set_roi(key, roi.start, roi.stop, colors[index], str(index + 1))
+            plot.set_roi(key, roi.start, roi.stop, colors[index], str(index + 1), crop=roi.is_crop)
         self.manager.set_rois(keys, rois, colors, settings.axis_units, plot.x_range, plot.pitch)
 
     def set_title(self):
@@ -308,29 +319,6 @@ class CameraView(UnitView):
 
     def _connect_manager(self):
         self.manager.edges_edited.connect(lambda key, *edges: self.rect_edited.emit(self.number, key, *edges))
-        self.manager.aggregation_edited.connect(
-            lambda key, aggregation: self.roi_field_edited.emit(self.number, key, 'aggregation', aggregation))
-
-    @staticmethod
-    def plottable(roi) -> bool:
-        """A crop has no value to plot: its pixels are saved as images"""
-        return not roi.is_crop
-
-    #: How each aggregation is called in the label of the axis
-    VALUE_NAMES = {'mean': 'mean', 'sum': 'sum', 'median': 'median', 'min': 'minimum', 'max': 'maximum',
-                   'std': 'standard deviation'}
-
-    def curve_name(self, roi, plotted) -> str:
-        """The name of the ROI, and its aggregation if the curves do not all have the same one"""
-        if len({other.aggregation for other in plotted}) > 1:
-            return f'{roi.name} ({roi.aggregation})'
-        return roi.name
-
-    def value_label(self, plotted) -> tuple[str, str]:
-        kinds = {roi.aggregation for roi in plotted}
-        if len(kinds) > 1:
-            return 'ROIs: see the legend', self.unit.value_units
-        return f'ROIs: {self.VALUE_NAMES[kinds.pop()] if kinds else "mean"} of the pixels', self.unit.value_units
 
     def _update_roi_widgets(self, keys, rois):
         plot = self.spectrum_plot

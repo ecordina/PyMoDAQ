@@ -7,10 +7,13 @@ The h5 file written by the extension is made of one small array per kind of data
 usual tools read, next to the h5 file (or in the folder of ``-o``), with its name as the beginning of the names:
 
 * **the values** of each spectrometer (``Unit1_...``, ``Unit2_...``), ``<file>_spectrometer1.csv``: one row per readout,
-  ``time (s) | temperature (°C) | integration time (ms) | ROI 1 [counts] | ROI 2 [counts] | ...``. The temperature is
-  there if the unit has a thermal controller, the integration time if it was saved, the ROIs which were recorded;
+  ``time (s) | temperature (°C) | integration time (ms) | ROI 1 mean (450-455 nm) [counts] | ROI 2 sum ... [counts] | ...``.
+  The temperature is there if the unit has a thermal controller, the integration time if it was saved, the ROIs which were
+  recorded and give a number (their mean, sum, median, min, max or standard deviation, as their name says);
 * **the full spectra** (when they were saved), ``<file>_spectrometer1_spectra.csv``: one row per spectrum, ``time (s) |
-  temperature (°C) | integration time (ms) | 450.123 nm | 450.456 nm | ...``;
+  temperature (°C) | integration time (ms) | 450.123 nm | 450.456 nm | ...``, and the ROIs of a spectrometer which are
+  *crops* (the part of the spectrum in their window), each in a file of its own,
+  ``<file>_spectrometer1_crop_<name>.csv``, the same with the wavelengths of the window;
 * **the camera** (``Unit3_...``): the values of its ROIs which give a number (their mean, sum, median, min, max or
   standard deviation) in ``<file>_camera.csv``, one row per readout like the one of a spectrometer, plus the number of
   the image in the tif file where there is one; the images (*The full image*, when it was saved) in
@@ -25,8 +28,9 @@ usual tools read, next to the h5 file (or in the folder of ``-o``), with its nam
 What is not in the file (a spectrometer or a camera which was not used, a temperature, a full spectrum, an image which
 were not recorded) is left out. The units are the ones the file holds: in the header of the columns of the csv files, in
 square brackets for what is measured, and in the text file. The values of the ROIs divided by the integration time in the
-extension (*Per ms of integration*) are in ``counts/ms``; ``--per-integration-time`` does it here, with the integration
-time of each readout, for the values and the spectra which were saved as they were measured.
+extension (*Per ms of integration*) are in ``counts/ms``, and so are the full spectra and the crops of the spectra if
+*Spectra per ms of integration* was ticked; ``--per-integration-time`` does it here, with the integration time of each
+readout, for the values, the spectra and the crops which were saved as they were measured.
 
 The time is in seconds from the first measurement of the experiment, the same zero in all the files
 (``--absolute-time`` gives the epoch seconds instead).
@@ -122,7 +126,7 @@ class UnitData:
 
     @property
     def is_camera(self) -> bool:
-        return 'Image' in self.series or bool(self.crops) or any('camera' in s.attrs for s in self.series.values())
+        return 'Image' in self.series or any('camera' in s.attrs for s in self.series.values())
 
     @property
     def kind(self) -> str:
@@ -150,7 +154,8 @@ class UnitData:
     @property
     def per_integration(self) -> bool:
         """The values of the ROIs were divided by the integration time in the extension"""
-        return bool(self.attr('per_integration', False))
+        series = self.series.get('ROIs')
+        return was_divided(series) if series is not None else False
 
     @property
     def intensity_units(self) -> str:
@@ -166,16 +171,26 @@ class UnitData:
     @property
     def value_units(self) -> str:
         """The units of the values of the ROIs, as they are in the file"""
-        units = str(self.attr('values_units', ''))
-        if units:
-            return units
         series = self.series.get('ROIs')
-        return series.units[0] if series is not None and series.units else self.intensity_units
+        return series_units(series, self.intensity_units) if series is not None else self.intensity_units
 
 
 def divided(units: str) -> str:
     """The units of a measurement per ms of integration: ``counts`` -> ``counts/ms``"""
     return f'{units}/{INTEGRATION_UNITS}' if units else f'1/{INTEGRATION_UNITS}'
+
+
+def series_units(series: Series, default: str = '') -> str:
+    """The units of what a group holds, as the group says it (``values_units``), else the ones of its arrays"""
+    units = str(series.attrs.get('values_units', ''))
+    if units:
+        return units
+    return series.units[0] if series.units and series.units[0] else default
+
+
+def was_divided(series: Series) -> bool:
+    """What the group holds was divided by the integration time in the extension"""
+    return bool(series.attrs.get('per_integration', False))
 
 
 def open_file(path: Path):
@@ -440,21 +455,23 @@ def roi_lines(unit: UnitData, files: dict[str, str]) -> list[str]:
         recorded = []
     for roi in recorded:
         name = roi.get('name', '')
+        what = AGGREGATION_WORDS.get(roi.get('aggregation', 'mean'), 'mean')
         if 'x0' in roi:
-            where = f'x {roi["x0"]:g}-{roi["x1"]:g}, y {roi["y0"]:g}-{roi["y1"]:g} pixel'
-            what = AGGREGATION_WORDS.get(roi.get('aggregation', 'mean'), 'mean')
-            lines.append(f'    {name}: {what} of the pixels in {where}')
+            lines.append(f'    {name}: {what} of the pixels in x {roi["x0"]:g}-{roi["x1"]:g}, y {roi["y0"]:g}-{roi["y1"]:g} '
+                         f'pixel')
         else:
-            lines.append(f'    {name}: mean of the pixels in {roi.get("start", 0):g}-{roi.get("stop", 0):g} nm')
+            lines.append(f'    {name}: {what} of the pixels in {roi.get("start", 0):g}-{roi.get("stop", 0):g} nm')
     for crop in unit.crops:
-        try:
-            roi = json.loads(crop.attrs['roi'])
-        except (KeyError, TypeError, ValueError):
-            roi = {}
+        roi = roi_of_crop(crop)
         name = str(roi.get('name', crop.kind))
-        where = (f'x {roi["x0"]:g}-{roi["x1"]:g}, y {roi["y0"]:g}-{roi["y1"]:g} pixel' if 'x0' in roi else '')
+        if 'x0' in roi:
+            where = f'the pixels in x {roi["x0"]:g}-{roi["x1"]:g}, y {roi["y0"]:g}-{roi["y1"]:g} pixel'
+        elif 'start' in roi:
+            where = f'the spectrum in {roi["start"]:g}-{roi["stop"]:g} nm'
+        else:
+            where = 'the pixels'
         target = f' -> {files[name]}' if name in files else ''
-        lines.append(f'    {name}: crop of the pixels in {where}{target}')
+        lines.append(f'    {name}: crop of {where}{target}')
     return lines
 
 
@@ -481,6 +498,10 @@ def unit_lines(unit: UnitData, files: dict[str, str]) -> list[str]:
         divide = ' (divided by the integration time in the extension)' if unit.per_integration else ''
         lines.append(f'  ROIs, values in {unit.value_units}{divide}:' if 'ROIs' in unit.series else '  ROIs:')
         lines += roi_lines(unit, files)
+    for kind, label in (('Spectrum', 'full spectra'), ('Image', 'full images')):
+        if kind in unit.series and was_divided(unit.series[kind]):
+            lines.append(f'  the {label} were divided by the integration time in the extension '
+                         f'({series_units(unit.series[kind], unit.intensity_units)})')
     saved = []
     for kind, label in (('ROIs', 'ROIs'), ('Temperature', 'temperature'), ('Integration', f'{what} time')):
         if kind in unit.series and len(unit.series[kind]):
@@ -532,8 +553,14 @@ def report_text(file, units: dict[int, UnitData], description: dict[str, str], t
         if unit.series.get('Spectrum') is not None and unit.series['Spectrum'].axis is not None:
             lines.append(f'wavelength: nm ({unit.name})')
         if 'ROIs' in unit.series or unit.crops or 'Spectrum' in unit.series or 'Image' in unit.series:
+            held = [f'values of the ROIs: {unit.value_units}'] if 'ROIs' in unit.series else []
+            for kind, label in (('Spectrum', 'full spectra'), ('Image', 'full images')):
+                if kind in unit.series:
+                    held.append(f'{label}: {series_units(unit.series[kind], unit.intensity_units)}')
+            if unit.crops and not unit.is_camera:
+                held.append(f'crops: {series_units(unit.crops[0], unit.intensity_units)}')
             lines.append(f'intensity ({unit.name}): {unit.intensity_units or "not given"}'
-                         + (f'; values of the ROIs: {unit.value_units}' if 'ROIs' in unit.series else ''))
+                         + (f'; {"; ".join(held)}' if held else ''))
     if written:
         lines += ['', 'Files', '-----']
         width = max(len(path.name) for path, _ in written)
@@ -576,47 +603,94 @@ class SpectraRows:
             yield start, block
 
 
+def spectral_csv(unit: UnitData, series: Series, array: int, path: Path, what: str, t0: float, options
+                 ) -> Optional[tuple[Path, str]]:
+    """A csv with one row per spectrum (or part of a spectrum) of a group: its time, the temperature, the integration time
+    and one column per wavelength
+
+    The group may hold what was divided by the integration time in the extension, or not: ``--per-integration-time`` divides
+    what was not, with the integration time of each row.
+    """
+    at = series.time[:len(series)]
+    time_name, times = time_column(at, t0, options)
+    context_names, context = [time_name], [times]
+    if 'Temperature' in unit.series and len(unit.series['Temperature']):
+        temperature = unit.series['Temperature']
+        context_names.append(temperature_name(unit))
+        context.append(nearest(temperature.time[:len(temperature)], temperature.column(0), at, False, MAX_GAP))
+    integration = integration_column(unit, at)
+    if integration is not None:
+        context_names.append(f'integration time ({INTEGRATION_UNITS})')
+        context.append(integration)
+    units = series_units(series, unit.intensity_units)
+    divide = getattr(options, 'per_integration_time', False)
+    if divide and was_divided(series):
+        print(f'  {unit.name}: {what} were divided by the integration time when they were measured ({units})',
+              file=sys.stderr)
+        divide = False
+    elif divide and integration is None:
+        print(f'  {unit.name}: no integration time was saved: {what} cannot be divided by it', file=sys.stderr)
+        divide = False
+    if divide:
+        units = divided(units)
+    wavelengths = series.axis
+    n_pixels = series.arrays[array].shape[1]
+    header = context_names + [f'{wavelengths[pixel]:.3f} nm' if wavelengths is not None and pixel < len(wavelengths)
+                              else f'pixel {pixel}' for pixel in range(n_pixels)]
+    reader = SpectraRows(series.arrays[array][:len(series)], integration if divide else None)
+    with open(path, 'w', newline='', encoding='utf-8-sig') as stream:
+        writer = csv.writer(stream, delimiter=options.delimiter)
+        writer.writerow(header)
+        for start, block in reader.blocks():
+            for row, intensities in enumerate(block):
+                writer.writerow([cell(column[start + row]) for column in context]
+                                + [f'{value:.9g}' if np.isfinite(value) else '' for value in intensities])
+    return path, f'{unit.name}: {what}, one row each (intensities in {units or "?"}, one column per wavelength)'
+
+
 def export_spectra(unit: UnitData, t0: float, stem: Path, options) -> list[tuple[Path, str]]:
     """``<file>_spectrometer1_spectra.csv``: one row per full spectrum saved, with its time, temperature and integration
     time, and one column per wavelength"""
     spectra = unit.series.get('Spectrum')
     if spectra is None or not len(spectra) or options.no_spectra:
         return []
-    at = spectra.time[:len(spectra)]
-    time_name, times = time_column(at, t0, options)
-    context_names, context = [time_name], [times]
-    if 'Temperature' in unit.series and len(unit.series['Temperature']):
-        series = unit.series['Temperature']
-        context_names.append(temperature_name(unit))
-        context.append(nearest(series.time[:len(series)], series.column(0), at, False, MAX_GAP))
-    integration = integration_column(unit, at)
-    if integration is not None:
-        context_names.append(f'integration time ({INTEGRATION_UNITS})')
-        context.append(integration)
-    divide = getattr(options, 'per_integration_time', False)
-    if divide and integration is None:
-        print(f'  {unit.name}: no integration time was saved: the spectra cannot be divided by it', file=sys.stderr)
-        divide = False
-    units = divided(unit.intensity_units) if divide else unit.intensity_units
     written = []
     for index in range(len(spectra.arrays)):
-        wavelengths = spectra.axis
-        n_pixels = spectra.arrays[index].shape[1]
-        header = context_names + [f'{wavelengths[pixel]:.3f} nm' if wavelengths is not None and pixel < len(wavelengths)
-                                  else f'pixel {pixel}' for pixel in range(n_pixels)]
         suffix = '' if index == 0 else str(index + 1)
         path = stem.with_name(f'{stem.name}_{unit.kind}{unit.number}_spectra{suffix}.csv')
-        reader = SpectraRows(spectra.arrays[index][:len(spectra)], integration if divide else None)
-        with open(path, 'w', newline='', encoding='utf-8-sig') as stream:
-            writer = csv.writer(stream, delimiter=options.delimiter)
-            writer.writerow(header)
-            for start, block in reader.blocks():
-                for row, intensities in enumerate(block):
-                    writer.writerow([cell(column[start + row]) for column in context]
-                                    + [f'{value:.9g}' if np.isfinite(value) else '' for value in intensities])
-        written.append((path, f'{unit.name}: the full spectra, one row each (intensities in {units or "?"}, one column '
-                              f'per wavelength)'))
+        written.append(spectral_csv(unit, spectra, index, path, 'the full spectra', t0, options))
     return written
+
+
+def roi_of_crop(crop: Series) -> dict:
+    """The ROI of a group of a crop, as the group says it (its name, its window...)"""
+    try:
+        roi = json.loads(crop.attrs['roi'])
+    except (KeyError, TypeError, ValueError):
+        return {}
+    return roi if isinstance(roi, dict) else {}
+
+
+def export_spectrum_crops(unit: UnitData, t0: float, stem: Path, options) -> tuple[list[tuple[Path, str]], dict[str, str]]:
+    """``<file>_spectrometer1_crop_<name>.csv`` for each ROI which is a crop: one row per measurement (or every *Crops every*
+    seconds), with its time, temperature and integration time, and one column per wavelength of its window
+
+    Returns
+    -------
+    (written, files): the files and what they are; the file of each crop by the name of its ROI
+    """
+    written, files = [], {}
+    for crop in unit.crops:
+        if not len(crop):
+            continue
+        name = str(roi_of_crop(crop).get('name', crop.kind))
+        path = stem.with_name(f'{stem.name}_{unit.kind}{unit.number}_crop_{file_part(name)}.csv')
+        for array in range(len(crop.arrays)):
+            target = path if array == 0 else path.with_name(f'{path.stem}{array + 1}.csv')
+            written.append(spectral_csv(unit, crop, array, target, f'the part of the spectrum of the crop {name}', t0,
+                                        options))
+        files[name] = path.name
+    return written, files
 
 
 # ----------------------------------------------------------------------------------------------------------------------
@@ -779,10 +853,7 @@ def export_camera(camera: UnitData, units: dict[int, UnitData], t0: float, stem:
         for crop in camera.crops:
             if not len(crop):
                 continue
-            try:
-                roi = json.loads(crop.attrs['roi'])
-            except (KeyError, TypeError, ValueError):
-                roi = {}
+            roi = roi_of_crop(crop)
             name = str(roi.get('name', crop.kind))
             info = (f'ThermoSpectro: crop {name} of the camera {camera.attr("camera", "")}, '
                     f'window x {roi.get("x0", "?")}-{roi.get("x1", "?")}, y {roi.get("y0", "?")}-{roi.get("y1", "?")} '
@@ -889,6 +960,9 @@ def export_file(path: Path, out: Optional[Path], options) -> list[Path]:
                 else:
                     written += export_values(unit, t0, stem, options)
                     written += export_spectra(unit, t0, stem, options)
+                    files, crops = export_spectrum_crops(unit, t0, stem, options)
+                    written += files
+                    crop_files[number] = crops
             except ValueError as e:
                 print(f'  {unit.name}: {e}', file=sys.stderr)
         for notes in export_notes(times, texts, t0, stem, options):
@@ -904,8 +978,9 @@ def parser() -> argparse.ArgumentParser:
     arguments = argparse.ArgumentParser(
         prog='lab_export',
         description='Convert the h5 file of an experiment of the lab into csv files (the values of each spectrometer and '
-                    'of the ROIs of the camera, the full spectra), tif files (the images and the crops, axes T, C, Y, X) '
-                    'and a text with the protocol and the observations.', epilog=__doc__.split('\n\n')[0])
+                    'of the ROIs of the camera, the full spectra, the crops of the spectra), tif files (the images and '
+                    'the crops of the camera, axes T, C, Y, X) and a text with the protocol and the observations.',
+        epilog=__doc__.split('\n\n')[0])
     arguments.add_argument('files', nargs='+', type=Path, help='the h5 file(s) written by the extension')
     arguments.add_argument('-o', '--out', type=Path, help='the folder of the new files (default: the one of the h5 file)')
     arguments.add_argument('--experiment', type=int, default=-1, metavar='N',
