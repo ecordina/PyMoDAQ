@@ -2,7 +2,7 @@
 
 This is a fork of [PyMoDAQ](https://github.com/PyMoDAQ/PyMoDAQ) (release branch 5.3.x) which also holds, in this `lab/`
 folder, the code that runs on the computers of the lab. **The branch to use is `lab`** (the default branch of the fork):
-it is the release 5.3.8 of PyMoDAQ plus this folder and one fix of PyMoDAQ itself (see "PyMoDAQ itself" below); the only other
+it is the release 5.3.8 of PyMoDAQ plus this folder and two fixes of PyMoDAQ itself (see "PyMoDAQ itself" below); the only other
 PyMoDAQ files it changes are the two root README files (a note at the top).
 
 | folder | what it is |
@@ -54,6 +54,10 @@ with the fixes the lab needs, in `packages/`:
   PyMoDAQ repository, `control_modules/utils.py`): after a failed *Ini* (wrong or busy port, spectrometer not found...) the
   next attempts initialized the hardware 2, 3... times and quitting the application aborted the process (`QThread:
   Destroyed while thread is still running`). The PID actuator, which cannot be initialized without its extension, says so.
+* **the log file is rotated without errors on Windows** (`pymodaq_utils/logger.py`): `pymodaq_utils` and `pymodaq_data` each added a
+  handler on the same `pymodaq.log`, and Windows cannot rename a file which is open twice, so after midnight every message printed
+  a `--- Logging error ---` traceback to the console and was lost. The loggers now share one handler per file, and a rotation
+  which fails (another instance of the application holds the file) no longer raises: the file is written to, and rotated the next day.
 
 These fixes are only on a computer which runs PyMoDAQ **from this repository**: `python lab/install_lab.py --core` installs
 the five packages of `packages/` (editable, as `5.3.8+lab`, no git tag needed) in place of the installed PyMoDAQ; then
