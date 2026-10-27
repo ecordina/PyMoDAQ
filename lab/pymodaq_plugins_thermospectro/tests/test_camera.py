@@ -387,6 +387,48 @@ class TestLostReadouts:
         bench.unit._release()
         assert bench.camera.inits >= 1
 
+    def test_a_missed_image_is_asked_for_again_after_the_integration_time(self, bench):
+        self.quick(bench)
+        bench.settings.child('readout_time').setValue(30.)  # (not the rhythm which is waited for)
+        bench.camera.drop_next = 1  # the first snap is never answered
+
+        bench.unit.start_live(time.time())
+        bench.wait_for(1, timeout=8000)  # (a missed image is not waited 30 s for)
+        remaining = bench.unit._timer.remainingTime()
+        bench.unit._release()
+
+        assert bench.unit.n_lost == 1 and bench.camera.closes == 0  # (once is not enough to close the camera)
+        assert bench.camera.snaps == 2
+        assert remaining > 20000  # (and after an image which came back the next one is a readout time later)
+
+    def test_a_second_miss_closes_the_camera_and_the_image_is_asked_for_after_the_integration_time(self, bench):
+        self.quick(bench)
+        bench.settings.child('readout_time').setValue(30.)
+        bench.camera.silent, bench.camera.restart_fixes = True, True
+
+        bench.unit.start_live(time.time())
+        bench.wait_for(1, timeout=15000)  # (nothing is waited for for 30 s)
+        remaining = bench.unit._timer.remainingTime()
+        bench.unit._release()
+
+        assert bench.camera.closes == 1 and bench.camera.inits == 1
+        assert bench.unit.n_lost == 2 and bench.unit.n_reinits == 1
+        assert remaining > 20000
+
+    def test_the_first_image_of_an_experiment_is_not_waited_a_readout_time_for(self, bench):
+        bench.settings.child('readout_time').setValue(30.)
+        bench.unit.start_live(time.time())
+        bench.qtbot.waitUntil(lambda: bench.unit.ready, timeout=10000)
+        before = len(bench.measurements)
+
+        bench.unit.begin_run(time.time(), 0.)
+        bench.wait_for(before + 1, timeout=8000)
+        remaining = bench.unit._timer.remainingTime()
+        bench.unit._release()
+
+        assert bench.measurements[-1].index == 0
+        assert remaining > 20000  # (the next one is a readout time after the first)
+
     def test_the_camera_is_not_restarted_when_the_unit_is_released(self, bench):
         self.quick(bench)
         bench.camera.silent = True  # (nothing will ever fix it)

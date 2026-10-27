@@ -38,8 +38,9 @@ Check that it is seen: `python -c "from pylablib.devices import Thorlabs; print(
   USB settings > USB selective suspend setting > *Disabled* (for each power plan in use). Windows otherwise powers down a USB 3
   camera that it finds idle between two readouts, and the images may stop coming after hours. Plug the camera directly into a USB 3
   port of the computer (not a hub).
-* If the images stop anyway, the application reads out again after 30 s or more, closes the camera and initializes it again after
-  two readouts lost in a row, and counts them (*Missed readouts* and *Restarts* in the Status of the unit).
+* If the images stop anyway, the application asks again one integration time after the missed image, closes the camera and
+  initializes it again after as many missed ones in a row as set in *Restart after missed* (2 by default), and counts them
+  (*Missed readouts* and *Restarts* in the Status of the unit). The same goes for a spectrometer.
 
 **On Linux (and macOS), OpenCV must be the headless one.** `pymodaq_plugins_thorlabs` requires `opencv-python`, whose wheel
 ships its own Qt 5 and points Qt to it when it is imported (PyMoDAQ imports it with the plugins, before its window is made):

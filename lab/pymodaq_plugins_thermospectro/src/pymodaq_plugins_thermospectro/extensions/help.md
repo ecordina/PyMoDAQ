@@ -250,6 +250,10 @@ initial temperatures at once (the proposed answer) or to bring them back gradual
 set at once. When no ramp is going on (the controllers are held, or the ramps are over) there is nothing to bring back: the
 dialog only asks whether to close the log, and the controllers stay where they are.
 
-A **camera** which stops sending images is read out again after a short time (at least 30 s), and closed and initialized again
-by itself after two readouts lost in a row (the *Restarts* in its Status). The *Missed readouts* in the Status of the unit count
-the readouts which gave nothing since the live view or the experiment began; the status bar tells it too.
+The **first measurement of an experiment** is taken one integration time after it begins, then one readout time after each
+measurement which came back. A **spectrometer or a camera** which stops answering is asked again one integration time after the
+missed readout (it is given up on after at least 10 s, 30 s for a camera, whatever the readout time is), and closed and
+initialized again by itself when as many readouts in a row as *Restart after missed* are missed (2 by default, 1: at the first one,
+0: never; it can be changed during an experiment); a readout is asked for one integration time after it is initialized. The
+*Missed readouts* in the Status of the unit count the readouts which gave nothing since the live view or the experiment began, the
+*Restarts* how many times the instrument was initialized again; the status bar tells the missed ones too.

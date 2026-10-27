@@ -419,7 +419,8 @@ class TestOneReadoutAtATime:
         bench.wait_for(n + 3)
         bench.unit._release()
         after = bench.measurements[n:]
-        assert all(m.t >= begin for m in after)  # the one asked for before the start is not one of them
+        # the one asked for before the start is not one of them (time.time() ticks every 15 ms on Windows)
+        assert all(m.t >= begin - 0.05 for m in after)
         assert after[0].index == 0
         assert bench.detector.max_in_flight == 1
 
@@ -435,26 +436,90 @@ class TestOneReadoutAtATime:
         assert bench.unit.n_lost == 1
         assert bench.detector.snaps >= 3
 
-    def test_a_spectrometer_is_not_closed_and_initialized_again(self, qtbot):
+    @staticmethod
+    def lost_bench(qtbot, restart_after=None, fixes=True):
         bench = Bench(qtbot)
         bench.unit.pending_timeout = lambda: 0.2
-        bench.detector.silent = True
+        bench.detector.silent, bench.detector.restart_fixes = True, fixes
+        if restart_after is not None:
+            bench.settings.child('restart_after').setValue(restart_after)
+        return bench
+
+    def test_a_spectrometer_is_closed_and_initialized_again_after_two_missed_readouts(self, qtbot):
+        bench = self.lost_bench(qtbot)
+        assert bench.settings.restart_after == 2  # (the default)
 
         bench.unit.start_live(time.time())
-        qtbot.waitUntil(lambda: bench.unit.n_lost >= 3, timeout=20000)
+        bench.wait_for(1, timeout=20000)
+        bench.unit._release()
+
+        assert bench.detector.closes == 1 and bench.detector.inits == 1
+        assert bench.unit.n_lost == 2 and bench.unit.n_reinits == 1
+
+    def test_the_spectrometer_is_restarted_at_the_first_missed_readout_if_it_is_told_to(self, qtbot):
+        bench = self.lost_bench(qtbot, restart_after=1)
+
+        bench.unit.start_live(time.time())
+        qtbot.waitUntil(lambda: bench.detector.closes >= 1, timeout=20000)
+        n_lost = bench.unit.n_lost
+        bench.unit._release()
+
+        assert n_lost == 1
+
+    def test_the_spectrometer_is_restarted_after_as_many_missed_readouts_as_it_is_told_to(self, qtbot):
+        bench = self.lost_bench(qtbot, restart_after=3)
+
+        bench.unit.start_live(time.time())
+        qtbot.waitUntil(lambda: bench.detector.closes >= 1, timeout=20000)
+        n_lost = bench.unit.n_lost
+        bench.unit._release()
+
+        assert n_lost == 3
+
+    def test_a_spectrometer_is_never_restarted_if_it_is_told_not_to(self, qtbot):
+        bench = self.lost_bench(qtbot, restart_after=0, fixes=False)
+
+        bench.unit.start_live(time.time())
+        qtbot.waitUntil(lambda: bench.unit.n_lost >= 4, timeout=20000)  # (asked again after each missed one)
         bench.unit._release()
 
         assert bench.detector.closes == 0 and bench.unit.n_reinits == 0
-        assert bench.unit.n_missed >= 3
+        assert bench.detector.snaps >= 4
+
+    def test_when_to_restart_can_be_changed_during_an_experiment(self, qtbot):
+        bench = Bench(qtbot)
+
+        bench.settings.lock(True)
+
+        assert bench.settings.child('restart_after').opts['enabled']
+        assert not bench.settings.child('readout_time').opts['enabled']
 
     def test_the_time_to_wait_for_a_spectrum_depends_on_the_times_of_the_unit(self, bench):
         bench.settings.child('integration_time').setValue(60000.)
         bench.settings.child('readout_time').setValue(70.)
 
-        assert bench.unit.pending_timeout() == pytest.approx(5. * 130.)
+        assert bench.unit.pending_timeout() == pytest.approx(2. * 60. + 10.)
         bench.settings.child('integration_time').setValue(20.)
         bench.settings.child('readout_time').setValue(0.1)
-        assert bench.unit.pending_timeout() == 5.  # (never less)
+        assert bench.unit.pending_timeout() == pytest.approx(10., abs=0.1)  # (never less)
+
+
+class TestFirstReadout:
+    def test_the_first_measurement_of_an_experiment_comes_after_the_integration_time(self, qtbot):
+        bench = Bench(qtbot)
+        bench.settings.child('readout_time').setValue(30.)  # (the first readout is not a readout time after the start)
+        bench.unit.start_live(time.time())
+        qtbot.waitUntil(lambda: bench.unit.ready, timeout=10000)
+        before = len(bench.measurements)
+
+        bench.now = 0.
+        bench.unit.begin_run(time.time(), 0.)
+        bench.wait_for(before + 1, timeout=8000)
+        remaining = bench.unit._timer.remainingTime()
+        bench.unit._release()
+
+        assert bench.measurements[-1].index == 0
+        assert remaining > 20000  # (the next one is a readout time after the first)
 
 
 class TestAveraging:
@@ -488,7 +553,7 @@ class TestAveraging:
         bench.settings.child('integration_time').setValue(500.)
         bench.settings.child('readout_time').setValue(6.)
 
-        assert bench.unit.pending_timeout() == pytest.approx(5. * (6. + 5.))
+        assert bench.unit.pending_timeout() == pytest.approx(2. * 5. + 10.)
 
     def test_a_module_without_the_setting_counts_one(self, bench):
         bench.unit.detector = None

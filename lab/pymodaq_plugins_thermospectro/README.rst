@@ -163,17 +163,21 @@ itself is closed, nothing can bring it back: the extension says so. When the ext
 whether to set the initial temperatures at once (the proposed answer) or to bring them back gradually; when no ramp is going
 on (the controllers are held, or the ramps are over) there is nothing to bring back: it only asks whether to close the log.
 
-A **camera** which stops sending images (the readout times out in the Thorlabs driver) is given up on after
-``max(30 s, 2 x exposure x averages + 30 s)`` and read out again; after **two readouts lost in a row** it is closed and
-initialized again by itself (and tried again after 30 s, 1 min, 2 min, then every 5 min if it cannot be initialized). The
-Status of each unit shows the **Missed readouts** (the readouts which gave nothing since the live view or the experiment began)
-and the **Restarts** of the camera, the status bar tells the number of missed readouts, and the log says when the images come
-back. A gap in the recording is also visible in the file: the time of the measurements (its time axis) jumps by more than the
-readout time.
+The **first measurement of an experiment** is taken one integration time after it begins (not at the next readout time), then one
+readout time after each measurement which came back. A **spectrometer or a camera** which stops answering (for a camera, the readout
+times out in the Thorlabs driver) is given up on after ``max(10 s, 2 x integration x averages + 10 s)`` (30 s instead of 10 s for a
+camera) and **asked again one integration time later**, not at the next readout time (the readouts may then be closer to each other,
+or farther, than the readout time: data are wanted more than a regular rhythm). When as many readouts in a row as set in **Restart
+after missed** (2 by default; 1 restarts at the first missed readout, 0 never restarts) are missed, the instrument is **closed and
+initialized again** by itself and a readout is asked for one integration time after it is (it is tried again after 30 s, 1 min,
+2 min, then every 5 min if it cannot be initialized). After a readout which came back the next one is a readout time later. The Status
+of each unit shows the **Missed readouts** (the readouts which gave nothing since the live view or the experiment began) and the
+**Restarts**, the status bar tells the number of missed readouts, and the log says when the data come back. A gap in the recording is
+also visible in the file: the time of the measurements (its time axis) jumps by more than the readout time.
 
 The modes, the ROIs, the recording options, the settings and the file (its folder and its name, the title, the sample, the
 operator and the protocol) cannot be changed during a log; the buttons showing or hiding a ROI or the temperature can be
-used, and so can the observations and the integration time. The controller is only given set-points: protect it with the bounds of its
+used, and so can the observations, the integration time and *Restart after missed*. The controller is only given set-points: protect it with the bounds of its
 actuator (*Set bounds* in the settings of the DAQ_Move), the extension does not know its limits (a Quantum Northwest TC 125
 refuses a temperature it does not accept).
 

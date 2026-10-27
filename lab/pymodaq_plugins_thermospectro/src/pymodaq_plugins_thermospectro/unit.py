@@ -144,10 +144,8 @@ class Unit(QtCore.QObject):
 
     #: A module which delivers nothing is said to the user after this time (s) of live view
     SILENCE_NOTICE = 10.0
-    #: The detector is closed and initialized again when its readouts are lost (a camera which stopped sending images)
-    AUTO_REINIT = False
-    #: ... after this many readouts lost in a row
-    REINIT_AFTER = 2
+    #: A readout whose data did not come back is given up after at least this time (s), see :meth:`pending_timeout`
+    PENDING_MIN = 10.0
     #: The time (s) to wait before trying again after the 1st, 2nd... initialization which did not work (then the last)
     REINIT_WAITS = (30., 60., 120., 300.)
     #: The time (s) an initialization may take
@@ -205,6 +203,17 @@ class Unit(QtCore.QObject):
         self._reinit_retry_timer = QtCore.QTimer(self)
         self._reinit_retry_timer.setSingleShot(True)
         self._reinit_retry_timer.timeout.connect(self._start_reinit)
+        # (single shots) a readout which did not come back in time / a readout asked for again once the integration time
+        # has passed (after a missed one, or a camera initialized again) / the first readout of an experiment
+        self._miss_timer = QtCore.QTimer(self)
+        self._miss_timer.setSingleShot(True)
+        self._miss_timer.timeout.connect(self._on_miss)
+        self._resume_timer = QtCore.QTimer(self)
+        self._resume_timer.setSingleShot(True)
+        self._resume_timer.timeout.connect(self._resume_readout)
+        self._first_timer = QtCore.QTimer(self)
+        self._first_timer.setSingleShot(True)
+        self._first_timer.timeout.connect(self._first_readout)
         self._pending: Optional[tuple[float, float]] = None  # (epoch, monotonic) of the readout waiting for its spectrum
         self._started_at = 0.0
         self._run_started = 0.0  # time.monotonic() when the experiment began
@@ -484,8 +493,12 @@ class Unit(QtCore.QObject):
             raise RuntimeError('An experiment is going on, stop it first')
         self._release()
 
+    def _stop_timers(self):
+        for timer in (self._timer, self._miss_timer, self._resume_timer, self._first_timer):
+            timer.stop()
+
     def _release(self):
-        self._timer.stop()
+        self._stop_timers()
         self._cancel_reinit()
         self._disconnect()
         self._pending = None
@@ -494,15 +507,17 @@ class Unit(QtCore.QObject):
     def halt_readouts(self):
         """Stop reading the spectrometer out (it does not answer), the thermostat is left to the ramp"""
         self.failed = True
-        self._timer.stop()
+        self._stop_timers()
         self._pending = None
 
     # ----------------------------------------------------------------------------------------------------------
     # one readout
     # ----------------------------------------------------------------------------------------------------------
     def pending_timeout(self) -> float:
-        """The time (s) after which a readout whose spectrum did not come back is given up"""
-        return max(5.0, 5. * (self.settings.readout_time + self.acquisition_time()))
+        """The time (s) after which a readout whose data did not come back is given up (it is then asked again one
+        integration time later, and the detector is initialized again after the number of readouts in a row set in the
+        settings, see :meth:`_on_miss`)"""
+        return max(self.PENDING_MIN, 2. * self.acquisition_time() + self.PENDING_MIN)
 
     @logged
     def _readout(self):
@@ -510,6 +525,9 @@ class Unit(QtCore.QObject):
             return
         if self._pending is not None:
             age = time.monotonic() - self._pending[1]
+            if age > self.pending_timeout():  # (the miss timer is a few ms late)
+                self._on_miss()
+                return
             if age <= self.pending_timeout():
                 # the previous spectrum is not here yet: the integration or the transfer takes longer than the
                 # readout. Never two readouts at once: the detector may not cope with it
@@ -518,20 +536,64 @@ class Unit(QtCore.QObject):
                 if self.n_skipped in (1, 10, 100, 1000):
                     logger.warning(f'{self.detector.title}: the readout is late ({self.n_skipped} skipped)')
                 return
-            self.n_lost += 1
-            self.n_lost_in_a_row += 1
-            self._show_counters()
-            logger.warning(f'{self.detector.title}: no {self.DATA} came back from the readout started {age:.1f} s ago, '
-                           f'reading out again ({self.n_missed} readouts missed)')
-            self._pending = None
-            if self.AUTO_REINIT and self.n_lost_in_a_row >= self.REINIT_AFTER:
-                self._start_reinit()
-                return
         self._sync_integration()
         self._pending = (time.time(), time.monotonic(), self.integration_time_now())
         if self.thermostat is not None and self.thermostat.initialized_state:
             self.thermostat.get_actuator_value()
         self.detector.snap()
+        self._miss_timer.start(int(self.pending_timeout() * 1000))
+
+    def _integration_ms(self) -> int:
+        """The integration time (ms): what is waited for before a readout is asked again"""
+        return max(1, int(round(self.settings.integration_time)))
+
+    @logged
+    def _on_miss(self):
+        """A readout did not come back in time
+
+        The next one is asked for once the integration time has passed, not at the next readout time (the readouts are
+        then closer to each other, or farther, than the readout time: data are wanted more than a regular rhythm). When
+        as many readouts as the settings say (*Restart after missed*, 2 by default, 0: never) are missed in a row, the
+        detector is closed and initialized again, and the next readout is asked for once the integration time has passed
+        again. After a readout which came back the next one is a readout time later.
+        """
+        pending = self._pending
+        if self.state == UnitState.IDLE or self.failed or self._reiniting or pending is None or self.detector is None:
+            return
+        age = time.monotonic() - pending[1]
+        self._pending = None
+        self.n_lost += 1
+        self.n_lost_in_a_row += 1
+        self._show_counters()
+        logger.warning(f'{self.detector.title}: no {self.DATA} came back from the readout started {age:.1f} s ago '
+                       f'({self.n_missed} readouts missed)')
+        self._timer.stop()
+        restart_after = self.settings.restart_after
+        if restart_after > 0 and self.n_lost_in_a_row >= restart_after:
+            self._start_reinit()
+        else:
+            self._resume_timer.start(self._integration_ms())
+
+    @logged
+    def _resume_readout(self):
+        """Read out now (an integration time after a missed readout, or after the camera was initialized again, or at
+        the beginning of an experiment): the next readout is a readout time later"""
+        if self.state == UnitState.IDLE or self.failed or self._reiniting or self.detector is None:
+            return
+        self.update_timing()
+        self._readout()
+
+    @logged
+    def _first_readout(self):
+        """The first readout of an experiment, an integration time after it began (not at the next readout time)"""
+        if self.state != UnitState.RUNNING or self.failed or self._reiniting or self.detector is None:
+            return
+        pending = self._pending
+        if pending is not None and pending[1] < self._run_started \
+                and time.monotonic() - pending[1] <= self.pending_timeout():
+            self._first_timer.start(50)  # (one asked for before it began is on its way: it is not part of it, wait)
+            return
+        self._resume_readout()
 
     # ----------------------------------------------------------------------------------------------------------
     # what was missed, and the detector which is initialized again
@@ -583,7 +645,7 @@ class Unit(QtCore.QObject):
         self.n_reinits += 1
         if self._down_since is None:
             self._down_since = time.monotonic()
-        self._timer.stop()
+        self._stop_timers()
         self._pending = None
         self._show_counters()
         message = (f'{detector.title}: {self.n_lost_in_a_row} readouts lost in a row, it is closed and initialized '
@@ -622,8 +684,7 @@ class Unit(QtCore.QObject):
             self._requested_integration = None  # (the new plugin is told the integration time again)
             self.apply_integration_time()
             if not self.failed:
-                self.update_timing()
-                self._readout()
+                self._resume_timer.start(self._integration_ms())  # (the first image after the restart: not at once)
             return
         if time.monotonic() < self._reinit_deadline:
             return
@@ -648,6 +709,8 @@ class Unit(QtCore.QObject):
         self.n_lost_in_a_row = 0
         self._reinit_failures = 0
         pending, self._pending = self._pending, None
+        if pending is not None:
+            self._miss_timer.stop()
         if pending is None or self.state == UnitState.IDLE:
             return  # a spectrum nobody asked for (the module was grabbing on its own): shown, not measured
         if self.state == UnitState.RUNNING and pending[1] < self._run_started:
@@ -848,6 +911,7 @@ class Unit(QtCore.QObject):
             self.settings.child('status', 'phase').setValue(Phase.HOLD.value)
             self.settings.child('status', 'setpoint').setValue(float(self.hold_target))
         self.program_tick(now)
+        self._first_timer.start(self._integration_ms())  # (the first measurement does not wait for the next readout)
 
     def end_run(self):
         """The experiment is over: back to the live view"""
@@ -1081,7 +1145,7 @@ class CameraUnit(Unit):
     """
     channels_changed = QtCore.Signal(int)
     _n_channels = 0  # (how many channels the last image had: 0 before the first one)
-    AUTO_REINIT = True  # (a camera which stops sending images has to be closed and opened again)
+    PENDING_MIN = 30.0  # (the plugin of a camera gives up on its own when a frame does not come in 20 s)
     WHAT = 'camera'
     DATA = 'image'
     DIMENSION = '2D'
@@ -1090,11 +1154,6 @@ class CameraUnit(Unit):
     @property
     def label(self) -> str:
         return 'Camera'
-
-    def pending_timeout(self) -> float:
-        """The time (s) after which an image which did not come back is given up: the plugin of a camera gives up on
-        its own when a frame does not come in 20 s, there is no point in waiting for it much longer"""
-        return max(30., 2. * self.acquisition_time() + 30.)
 
     def _store_data(self, dte: DataToExport) -> bool:
         found = extract_frame(dte)

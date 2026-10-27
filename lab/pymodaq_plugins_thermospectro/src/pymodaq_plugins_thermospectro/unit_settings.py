@@ -42,6 +42,7 @@ RAMP_FIELDS = ('mode', 'initial', 'take_current', 'final', 'velocity', 'duration
 #: The default times of a spectrometer
 DEFAULT_INTEGRATION_TIME = 500.0  # ms
 DEFAULT_READOUT_TIME = 1.0  # s
+DEFAULT_RESTART_AFTER = 2  # readouts missed in a row before the detector is closed and initialized again
 #: What an instrument measures, until the user says otherwise (the plugins do not say: arbitrary units, A.U.; an ADC gives
 #: counts, a power meter W...), and the unit of the integration time
 DEFAULT_INTENSITY_UNITS = 'A.U.'
@@ -182,6 +183,12 @@ def _unit_definition(number: int, rois: Sequence[Roi], enabled: bool, kind: str,
          'tip': f'The {what} is read out, and a measurement recorded, once per readout time. '
                 f'It must be longer than the {"exposure" if cam else "integration"} time (as many times as the '
                 f'module of the {what} averages: its Naverage)'},
+        {'title': 'Restart after missed:', 'name': 'restart_after', 'type': 'int', 'value': DEFAULT_RESTART_AFTER,
+         'min': 0,
+         'tip': f'When a readout gives nothing, the {what} is asked again one {"exposure" if cam else "integration"} time '
+                f'later; when this many readouts in a row give nothing, the {what} is closed and initialized again '
+                f'(then asked once more one {"exposure" if cam else "integration"} time after). 1: restart at the first '
+                f'missed readout. 0: never restarted. Can be changed during an experiment'},
         {'title': 'Intensity unit:', 'name': 'intensity_units', 'type': 'str', 'value': DEFAULT_INTENSITY_UNITS,
          'tip': f'The unit of what the {what} measures (the instrument does not say): A.U. (arbitrary units) unless '
                 'you write another one (counts, V...). It is shown in the plots and saved with the data. What is '
@@ -363,6 +370,12 @@ class UnitSettings:
     def readout_time(self) -> float:
         """s, never less than the minimum of the parameter (a setting loaded from a file does not keep it)"""
         return max(0.05, float(self.param['readout_time']))
+
+    @property
+    def restart_after(self) -> int:
+        """How many readouts in a row may be missed before the detector is initialized again (0: never)"""
+        leaf = self.param.names.get('restart_after')  # (a tree saved by an older version has none)
+        return max(0, int(leaf.value())) if leaf is not None else DEFAULT_RESTART_AFTER
 
     @property
     def record_spectrum(self) -> bool:
@@ -784,6 +797,8 @@ class UnitSettings:
                     continue  # what is plotted can be changed during the experiment
                 if path == ('integration_time',):
                     continue  # so can the integration time: it is saved with each measurement
+                if path == ('restart_after',):
+                    continue  # and when to restart the detector
                 leaf.setOpts(enabled=not locked)
             for key in self.roi_keys:
                 self.param.child('rois', key).setOpts(removable=not locked)
