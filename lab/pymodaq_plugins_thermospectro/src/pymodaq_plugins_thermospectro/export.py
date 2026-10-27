@@ -19,8 +19,13 @@ usual tools read, next to the h5 file (or in the folder of ``-o``), with its nam
   the image in the tif file where there is one; the images (*The full image*, when it was saved) in
   ``<file>_camera.tif``, a time series of the usual axes **T, C, Y, X** (an ImageJ hyperstack: open it with Fiji /
   ImageJ, or ``tifffile.imread``); and the pixels of each ROI which is a *crop* in ``<file>_camera_crop_<name>.tif``,
-  the same kind of tif. ImageJ cannot open files of more than 4 GB (BigTIFF): a longer series is split in
-  ``..._part01.tif``, ``..._part02.tif``... and the csv file has the columns ``tif file`` and ``tif frame``;
+  the same kind of tif. A series is always **one file**: with more than 3.5 GB of pixels (a classic tif is limited to 4 GB)
+  it is a BigTIFF, which ImageJ alone does not read (Fiji does, with the Bio-Formats importer: *File > Import >
+  Bio-Formats*; so do ``tifffile.imread`` and napari), and the csv file has the column ``tif frame``. A tif also says
+  the size of a pixel (the calibration of ImageJ, in um: the pitch of the sensor the camera told, times its binning, divided
+  by ``--magnification``, or ``--pixel-size`` UM measured on the sample), the display range, the camera (make, model, serial
+  number, window and binning of the sensor), the software, the date of the first image and, in the label of each image, its
+  time, the temperature and the exposure time;
 * **what was written about the experiment**, ``<file>_experiment.txt``: the title, the sample, the operator, the
   protocol, the observations noted while it ran with their time, the instruments, the ROIs, the units, and the files
   which were written; the observations are also in ``<file>_notes.csv`` (``time (s) | clock time | observation``).
@@ -55,9 +60,10 @@ import json
 import re
 import sys
 import time
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterator, Optional, Sequence
+from typing import Callable, Iterator, Optional, Sequence
 
 import numpy as np
 
@@ -67,8 +73,10 @@ DESCRIPTION = ('experiment_title', 'sample', 'operator', 'protocol', 'applicatio
 NOTES = 'Notes'  # the group of the observations, in the group of the experiment
 IMAGEJ_TYPES = (np.uint8, np.uint16, np.float32)
 CHANNEL_COLORS = ('red', 'green', 'blue')
-#: ImageJ does not read BigTIFF: a tif holds at most this many bytes of pixels (a classic tif is limited to 4 GB)
-TIF_PART_BYTES = 3_500_000_000
+#: A classic tif is limited to 4 GB, which ImageJ reads (it does not read BigTIFF): a series of images with more bytes of
+#: pixels than this is written as a single BigTIFF file (Fiji reads it with Bio-Formats, so do tifffile, napari...)
+CLASSIC_TIF_BYTES = 3_500_000_000
+BIGTIFF_WORDS = ', a BigTIFF: Fiji opens it with the Bio-Formats importer, ImageJ alone does not read it'
 #: a value of another detector is left empty when it is further than this many readout intervals
 MAX_GAP = 3.0
 #: The integration time is in ms in the file
@@ -84,6 +92,15 @@ BUSY_WORDS = ('lock file', 'locking', 'already open')
 #: PyMoDAQ does on Windows): HDF5 itself refuses it if the file is not in SWMR mode, so nothing half written is read.
 #: 3: as an ordinary file (one which was not written in SWMR mode, an old one)
 OPEN_MODES = ({'swmr': True}, {'swmr': True, 'locking': False}, {})
+#: How a file whose header says an experiment is writing it in SWMR mode (or which was closed) is read: **without any lock**.
+#: On Windows a reader which holds the lock of HDF5 makes the *writes* of the experiment fail (``Permission denied``, then
+#: ``slist already enabled?``: the HDF5 of the experiment is left in a bad state, which can crash it hours later), so a file
+#: which is being written is never locked by this program: SWMR does not need it
+UNLOCKED_MODES = ({'swmr': True, 'locking': False}, {})
+#: The consistency flags in the header (superblock, versions 2 and 3) of an h5 file, which HDF5 keeps up to date while the
+#: file is open: open for writing, and open for writing in SWMR mode
+SUPERBLOCK_SIGNATURE = b'\x89HDF\r\n\x1a\n'
+FLAG_WRITING, FLAG_SWMR_WRITING = 0x01, 0x04
 #: The what the aggregations of the ROIs of a camera are called in the text
 AGGREGATION_WORDS = {'mean': 'mean', 'sum': 'sum', 'median': 'median', 'min': 'minimum', 'max': 'maximum',
                      'std': 'standard deviation', 'crop': 'crop'}
@@ -166,6 +183,16 @@ class UnitData:
         return default
 
     @property
+    def camera_info(self) -> dict:
+        """What the camera said about itself when the experiment started (its model, the pitch of its pixels, its binning...,
+        see ``camera_info.py``): empty for an older file and for a camera which said nothing (a Mock one)"""
+        try:
+            info = json.loads(str(self.attr('camera_info', '')))
+        except ValueError:
+            return {}
+        return info if isinstance(info, dict) else {}
+
+    @property
     def temperature_units(self) -> str:
         return str(self.attr('temperature_units', ''))
 
@@ -221,12 +248,39 @@ def looks_busy(error: Exception) -> bool:
     return isinstance(error, BlockingIOError) or any(word in str(error).lower() for word in BUSY_WORDS)
 
 
+def writer_state(path: Path) -> Optional[str]:
+    """Whether an experiment is writing the file, as the header of the file says it: read with plain python, so that no lock
+    of HDF5 is taken (a lock would make the writes of the experiment fail on Windows)
+
+    Returns
+    -------
+    ``'swmr'`` (open for writing in SWMR mode: it can be read), ``'writing'`` (open for writing, not in SWMR mode yet: the
+    first seconds of an experiment, it cannot be read), ``'busy'`` (the header cannot even be read: on Windows the
+    experiment which creates the file holds it), ``'closed'``, or None when the file does not say (an old format, or not an
+    h5 file)
+    """
+    try:
+        with open(path, 'rb') as stream:
+            head = stream.read(12)
+    except OSError:
+        return 'busy'
+    if len(head) < 12 or head[:8] != SUPERBLOCK_SIGNATURE or head[8] not in (2, 3):
+        return None
+    flags = head[11]
+    if flags & FLAG_SWMR_WRITING:
+        return 'swmr'
+    return 'writing' if flags & FLAG_WRITING else 'closed'
+
+
 def open_file(path: Path, wait: float = 0.0):
     """Open the h5 file of an experiment for reading, **in SWMR mode**: the file of an experiment which is running can be read
 
-    The modes are tried in the order of :data:`OPEN_MODES`, the same on every system. A file which a running experiment is
-    creating (its first seconds, until every group has its first data) or closing (its last moments) cannot be read: it is
-    tried again every quarter of a second for `wait` seconds.
+    The header of the file tells whether an experiment is writing it (:func:`writer_state`). A file which is being written
+    (or which was closed) is opened **without any lock** (:data:`UNLOCKED_MODES`): the locks of HDF5 make the writes of the
+    experiment fail on Windows, and the reader must never disturb the experiment. A file which does not say is opened in
+    the modes of :data:`OPEN_MODES`, the same on every system. A file which a running experiment is creating (its first
+    seconds, until every group has its first data) or closing (its last moments) cannot be read: it is tried again every
+    quarter of a second for `wait` seconds.
 
     Parameters
     ----------
@@ -251,7 +305,10 @@ def open_file(path: Path, wait: float = 0.0):
     told = False
     while True:
         errors = []
-        for kwargs in OPEN_MODES:
+        state = writer_state(path)
+        if state in ('writing', 'busy'):  # (not in SWMR mode yet: HDF5 is not asked, as it could take a lock)
+            errors.append(BlockingIOError(11, 'the file is open for writing and not in SWMR mode yet'))
+        for kwargs in (UNLOCKED_MODES if state in ('swmr', 'closed') else OPEN_MODES if state is None else ()):
             try:
                 return h5py.File(path, 'r', **kwargs)
             except TypeError:  # (an h5py too old to know the option)
@@ -861,27 +918,115 @@ def channel_labels(n_channels: int) -> list[str]:
     return ['R', 'G', 'B'][:n_channels] if n_channels == 3 else [f'channel {index + 1}' for index in range(n_channels)]
 
 
-def tif_parts(images: Series, dtype: np.dtype) -> list[range]:
-    """The frames of each tif file: ImageJ reads files of up to 4 GB (not BigTIFF), so a longer series is split"""
-    n_frames, n_channels = len(images), len(images.arrays)
-    frame_bytes = max(1, n_channels * int(np.prod(images.arrays[0].shape[1:])) * dtype.itemsize)
-    per_part = max(1, TIF_PART_BYTES // frame_bytes)
-    return [range(first, min(first + per_part, n_frames)) for first in range(0, n_frames, per_part)]
+@dataclass
+class TifExtras:
+    """What the tif files say besides the pixels: the size of a pixel, the camera, when the images were taken"""
+    pixel_um: Optional[tuple[float, float]] = None  # the size of a pixel of the image (along x, along y), in um
+    make: str = ''
+    model: str = ''
+    bit_depth: int = 0  # of the camera: the display range of the images is 0 to 2^bit_depth - 1
+    start: Optional[float] = None  # epoch seconds of the first image of the experiment
+    exposure_of: Optional[Callable[[np.ndarray], Optional[np.ndarray]]] = None  # epoch seconds -> exposure time (ms)
 
 
-def tif_name(stem: Path, what: str, part: int, n_parts: int) -> Path:
-    """``<file>_camera.tif``, or ``<file>_camera_part01.tif``... when the images are in several files (`what` is
-    ``camera``, or ``camera_crop_<name>`` for a crop)"""
-    return stem.with_name(f'{stem.name}_{what}.tif' if n_parts == 1 else f'{stem.name}_{what}_part{part + 1:02d}.tif')
+def pixel_size(camera: UnitData, options) -> tuple[Optional[tuple[float, float]], str]:
+    """The size of a pixel of the images of the camera (um, along x and along y) and how it is known
+
+    In this order: ``--pixel-size`` (what the user measured on the sample, the pixel of the image as it is, binning
+    included); else the pitch of the sensor the camera said, times its binning, divided by ``--magnification`` (1 by
+    default: **the sensor plane**, the size of a pixel on the sample is this divided by the magnification of the optics,
+    which the camera cannot know); else nothing, and the tif is in pixels.
+    """
+    given = getattr(options, 'pixel_size', None)
+    if given:
+        return (float(given), float(given)), f'{given:g} um per pixel, given with --pixel-size'
+    info = camera.camera_info
+    sensor = effective_pixel_um(info)
+    if sensor is None:
+        return None, ''
+    magnification = getattr(options, 'magnification', None) or 1.0
+    size = (sensor[0] / magnification, sensor[1] / magnification)
+    where = {'camera': 'said by the camera', 'table': 'from the table of the models of Thorlabs'}.get(
+        str(info.get('pixel_source', '')), 'of the camera')
+    if magnification == 1.0:
+        how = (f'{size[0]:.4g} um per pixel: the pitch of the sensor ({where}) times the binning; this is the SENSOR PLANE, '
+               f'give the magnification of the optics (--magnification) or the size of a pixel on the sample '
+               f'(--pixel-size) for the sample plane')
+    else:
+        how = f'{size[0]:.4g} um per pixel: the pitch of the sensor ({where}) times the binning, divided by the ' \
+              f'magnification {magnification:g}'
+    return size, how
+
+
+def effective_pixel_um(info: dict) -> Optional[tuple[float, float]]:
+    """The size of a pixel of the image on the sensor: the pitch of the sensor times the binning (None: not known)"""
+    pitch, binning = info.get('pixel_um'), info.get('binning') or (1, 1)
+    try:
+        return float(pitch[0]) * max(1, int(binning[0])), float(pitch[1]) * max(1, int(binning[1]))
+    except (TypeError, ValueError, IndexError):
+        return None
+
+
+def camera_sentence(camera: UnitData, how: str) -> str:
+    """What the camera said about itself, in a few words, for the description of the tif"""
+    info = camera.camera_info
+    if not info:
+        return ''
+    parts = []
+    name = ' '.join(str(info[key]) for key in ('manufacturer', 'model') if info.get(key))
+    if name or info.get('serial'):
+        parts.append(f'camera {name}'.strip() + (f' (serial {info["serial"]})' if info.get('serial') else ''))
+    if info.get('pixel_um'):
+        parts.append(f'sensor pixels {info["pixel_um"][0]:g} x {info["pixel_um"][1]:g} um')
+    if info.get('bit_depth'):
+        parts.append(f'{info["bit_depth"]} bits')
+    if info.get('sensor_type'):
+        parts.append(f'sensor {info["sensor_type"]}')
+    binning = info.get('binning') or (1, 1)
+    if tuple(binning) != (1, 1):
+        parts.append(f'binning {binning[0]} x {binning[1]}')
+    if info.get('window'):
+        x0, x1, y0, y1 = info['window']
+        parts.append(f'sensor window x {x0}-{x1}, y {y0}-{y1} pixel')
+    if how:
+        parts.append(f'calibration {how}')
+    return '; '.join(parts) + '.'
+
+
+def camera_extras(camera: UnitData, t0: float, options, exposure_of=None) -> TifExtras:
+    size, _ = pixel_size(camera, options)
+    info = camera.camera_info
+    return TifExtras(pixel_um=size, make=str(info.get('manufacturer', '') or ''), model=str(info.get('model', '') or ''),
+                     bit_depth=int(info.get('bit_depth', 0) or 0), start=t0, exposure_of=exposure_of)
+
+
+def ascii_text(text: str) -> str:
+    """ImageJ reads the description and the labels of a tif as 7 bits ASCII (tifffile refuses the rest)"""
+    return str(text).encode('ascii', errors='replace').decode('ascii')
+
+
+def tif_name(stem: Path, what: str) -> Path:
+    """``<file>_camera.tif`` (`what` is ``camera``, or ``camera_crop_<name>`` for a crop)"""
+    return stem.with_name(f'{stem.name}_{what}.tif')
 
 
 def write_tif(path: Path, images: Series, times: np.ndarray, temperature: Optional[np.ndarray], info: str,
-              frames: Optional[range] = None, dtype: Optional[np.dtype] = None):
-    """The images (the frames `frames`, all by default) in an ImageJ hyperstack: axes Time, Channel, Y (rows), X (columns)"""
+              frames: Optional[range] = None, dtype: Optional[np.dtype] = None, extras: Optional[TifExtras] = None,
+              exposure: Optional[np.ndarray] = None) -> bool:
+    """The images (the frames `frames`, all by default) in an ImageJ hyperstack: axes Time, Channel, Y (rows), X (columns)
+
+    A series of more than :data:`CLASSIC_TIF_BYTES` is one BigTIFF file, whatever its size; returns whether it is one.
+
+    What the file says, besides the pixels: the frame interval and, in the label of each image, its time, the temperature
+    and the exposure time; the colors (the lookup tables of the red, green and blue channels); with `extras` the size of a
+    pixel (the calibration of ImageJ, in um), the display range, the camera (make and model), the software and the date
+    of the first image; and the description: the camera, the thermostat, the exposure and the readout times.
+    """
     try:
         import tifffile
     except ImportError:
         raise SystemExit('The tif files need tifffile: python -m pip install tifffile') from None
+    extras = extras or TifExtras()
     n_channels = len(images.arrays)
     frames = range(len(images)) if frames is None else frames
     n_frames = len(frames)
@@ -896,8 +1041,22 @@ def write_tif(path: Path, images: Series, times: np.ndarray, temperature: Option
             text = f't={times[frame]:.3f} s'
             if temperature is not None and np.isfinite(temperature[frame]):
                 text += f', T={temperature[frame]:.3f}'
+            if exposure is not None and np.isfinite(exposure[frame]):
+                text += f', exp={exposure[frame]:.3f} ms'
             labels.append(f'{text}, {channel_labels(n_channels)[channel]}')
-    metadata = {'axes': 'TCYX', 'finterval': step, 'Info': info, 'Labels': labels, 'unit': 'pixel'}
+    metadata = {'axes': 'TCYX', 'finterval': step, 'Info': ascii_text(info), 'Labels': [ascii_text(x) for x in labels],
+                'unit': 'pixel'}
+    arguments: dict = {'software': 'lab_export (ThermoSpectro)'}
+    if extras.pixel_um:  # the calibration of ImageJ: pixels per um along x and y, and the unit
+        metadata['unit'] = 'um'
+        arguments['resolution'] = (1.0 / extras.pixel_um[0], 1.0 / extras.pixel_um[1])
+    if extras.bit_depth and dtype in (np.uint8, np.uint16) and extras.bit_depth <= 8 * np.dtype(dtype).itemsize:
+        metadata['Ranges'] = (0.0, float(2 ** extras.bit_depth - 1)) * n_channels  # (as the camera made them)
+    if extras.start is not None and n_frames:
+        arguments['datetime'] = datetime.datetime.fromtimestamp(extras.start + float(times[frames.start]))
+    tags = [(code, 's', 0, ascii_text(text), True) for code, text in ((271, extras.make), (272, extras.model)) if text]
+    if tags:
+        arguments['extratags'] = tags
     if n_channels == 3:  # shown as the colors of an image
         metadata['mode'] = 'composite'
         ramp = np.arange(256, dtype=np.uint8)
@@ -909,8 +1068,12 @@ def write_tif(path: Path, images: Series, times: np.ndarray, temperature: Option
             for array in images.arrays:
                 yield np.asarray(array[frame]).astype(dtype, copy=False)
 
-    with tifffile.TiffWriter(path, imagej=True, bigtiff=False) as writer:
-        writer.write(pages(), shape=(n_frames, n_channels) + shape, dtype=dtype, metadata=metadata)
+    big = n_frames * n_channels * int(np.prod(shape)) * np.dtype(dtype).itemsize > CLASSIC_TIF_BYTES
+    with warnings.catch_warnings():
+        warnings.filterwarnings('ignore', message='.*nonconformant BigTIFF ImageJ')  # (said in the text of the experiment)
+        with tifffile.TiffWriter(path, imagej=True, bigtiff=big) as writer:
+            writer.write(pages(), shape=(n_frames, n_channels) + shape, dtype=dtype, metadata=metadata, **arguments)
+    return big
 
 
 def find_temperature(camera: UnitData, units: dict[int, UnitData], at: np.ndarray, options
@@ -926,17 +1089,15 @@ def find_temperature(camera: UnitData, units: dict[int, UnitData], at: np.ndarra
     return None
 
 
-def write_images(series: Series, what: str, at_zero: float, temperature_of, stem: Path, info: str, options
-                 ) -> tuple[list[Path], list[range]]:
-    """The tif file(s) of a series of images: the paths and the frames of each"""
+def write_images(series: Series, what: str, at_zero: float, temperature_of, stem: Path, info: str, options,
+                 extras: Optional[TifExtras] = None) -> tuple[Path, bool]:
+    """The tif file of a series of images, and whether it is a BigTIFF (more than 4 GB of pixels)"""
     dtype = imagej_dtype(series.arrays)
-    parts = tif_parts(series, dtype)
-    paths = [tif_name(stem, what, number, len(parts)) for number in range(len(parts))]
+    path = tif_name(stem, what)
     times = series.time[:len(series)]
     temperature = temperature_of(times)
-    for part, path in zip(parts, paths):
-        write_tif(path, series, times - at_zero, temperature, info, part, dtype)
-    return paths, parts
+    exposure = extras.exposure_of(times) if extras is not None and extras.exposure_of is not None else None
+    return path, write_tif(path, series, times - at_zero, temperature, info, None, dtype, extras, exposure)
 
 
 def export_camera(camera: UnitData, units: dict[int, UnitData], t0: float, stem: Path, options
@@ -972,7 +1133,18 @@ def export_camera(camera: UnitData, units: dict[int, UnitData], t0: float, stem:
         found = find_temperature(camera, units, times, options)
         return None if found is None else found[1]
 
-    tifs, parts, split = [], [], False
+    def exposure_of(times: np.ndarray) -> Optional[np.ndarray]:  # (the exposure time of each image, if it was recorded)
+        series = camera.series.get('Integration')
+        if series is None or not len(series):
+            return None
+        return nearest(series.time[:len(series)], series.column(0), times, False, MAX_GAP)
+
+    extras = camera_extras(camera, t0, options, exposure_of)
+    about_camera = camera_sentence(camera, pixel_size(camera, options)[1])
+    if camera.camera_info and extras.pixel_um is None and not options.no_tif:
+        print('  the camera did not say the size of its pixels: the tif files are in pixels (--pixel-size UM gives it)',
+              file=sys.stderr)
+    tif = None
     if images is None and not camera.crops:
         print('  the images of the camera were not recorded (tick "The full image" under "Record to disk" of the '
               'camera, or make a ROI a crop): no tif file', file=sys.stderr)
@@ -980,11 +1152,9 @@ def export_camera(camera: UnitData, units: dict[int, UnitData], t0: float, stem:
         info = (f'ThermoSpectro: camera {camera.attr("camera", "")}, thermostat {camera.attr("thermostat", "")}, '
                 f'exposure {camera.attr("integration_time_ms", "")} ms (at the start), readout '
                 f'{camera.attr("readout_time_s", "")} s, {len(images)} images, pixels in {camera.intensity_units or "?"}. '
-                f'The frames of the tif are the images of the csv file of the same name.')
-        tifs, parts = write_images(images, 'camera', t0, temperature_of, stem, info, options)
-        split = len(parts) > 1
-        for path, part in zip(tifs, parts):
-            written.append((path, f'camera: the full images, axes T, C, Y, X ({len(part)} frames)'))
+                f'The frames of the tif are the images of the csv file of the same name. {about_camera}')
+        tif, big = write_images(images, 'camera', t0, temperature_of, stem, info, options, extras)
+        written.append((tif, f'camera: the full images, axes T, C, Y, X ({len(images)} frames{BIGTIFF_WORDS if big else ""})'))
 
     crop_files: dict[str, str] = {}
     if not options.no_tif:
@@ -995,21 +1165,17 @@ def export_camera(camera: UnitData, units: dict[int, UnitData], t0: float, stem:
             name = str(roi.get('name', crop.kind))
             info = (f'ThermoSpectro: crop {name} of the camera {camera.attr("camera", "")}, '
                     f'window x {roi.get("x0", "?")}-{roi.get("x1", "?")}, y {roi.get("y0", "?")}-{roi.get("y1", "?")} '
-                    f'pixel, {len(crop)} images, pixels in {camera.intensity_units or "?"}')
-            paths, crop_parts = write_images(crop, f'camera_crop_{file_part(name)}', t0, temperature_of, stem, info,
-                                             options)
-            crop_files[name] = paths[0].name if len(paths) == 1 else f'{paths[0].name} ... {paths[-1].name}'
-            for path, part in zip(paths, crop_parts):
-                written.append((path, f'camera: the pixels of the crop {name}, axes T, C, Y, X ({len(part)} frames)'))
+                    f'pixel, {len(crop)} images, pixels in {camera.intensity_units or "?"}. {about_camera}')
+            path, big = write_images(crop, f'camera_crop_{file_part(name)}', t0, temperature_of, stem, info, options,
+                                     extras)
+            crop_files[name] = path.name
+            written.append((path, f'camera: the pixels of the crop {name}, axes T, C, Y, X ({len(crop)} frames'
+                                  f'{BIGTIFF_WORDS if big else ""})'))
 
-    if images is not None and len(images) and tifs:  # (which frame of which tif holds the image of each readout)
+    if images is not None and len(images) and tif is not None:  # (which frame of the tif holds the image of each readout)
         rows, valid = matching_rows(images.time[:len(images)], at)
-        per_part = len(parts[0])
-        if split:
-            names.append('tif file')
-            columns.append([tifs[row // per_part].name if there else '' for row, there in zip(rows, valid)])
         names.append('tif frame')
-        columns.append(WithGaps(np.where(valid, rows % per_part + 1, 0).astype(float), valid))
+        columns.append(WithGaps(np.where(valid, rows + 1, 0).astype(float), valid))
     if names:
         time_name, times = time_column(at, t0, options)
         path = stem.with_name(f'{stem.name}_camera.csv')
@@ -1114,6 +1280,14 @@ def export_file(path: Path, out: Optional[Path], options) -> list[Path]:
     return [path for path, _ in written]
 
 
+def positive(text: str) -> float:
+    """A number of the command line which is more than 0"""
+    value = float(text)
+    if not value > 0:
+        raise argparse.ArgumentTypeError(f'{text} is not more than 0')
+    return value
+
+
 def parser() -> argparse.ArgumentParser:
     arguments = argparse.ArgumentParser(
         prog='lab_export',
@@ -1137,6 +1311,13 @@ def parser() -> argparse.ArgumentParser:
                                 f'seconds) or closed (its last moments), default {WAIT:g}; 0: do not wait')
     arguments.add_argument('--no-spectra', action='store_true', help='do not write the csv file of the full spectra')
     arguments.add_argument('--no-tif', action='store_true', help='do not write the tif files (the csv files only)')
+    arguments.add_argument('--magnification', type=positive, metavar='M',
+                           help='the magnification of the optics between the sample and the camera: a pixel of the tif is '
+                                'the pitch of the sensor (times the binning) divided by this, in um (default 1: the '
+                                'sensor plane)')
+    arguments.add_argument('--pixel-size', type=positive, metavar='UM',
+                           help='the size of a pixel of the images on the sample, in um, as measured (binning included): '
+                                'the calibration of the tif files, instead of what the camera said')
     arguments.add_argument('--absolute-time', action='store_true', help='the time in epoch seconds, not from the start')
     arguments.add_argument('--program', action='store_true',
                            help='add the set-point, the cycle and the phase code of the temperature ramp')

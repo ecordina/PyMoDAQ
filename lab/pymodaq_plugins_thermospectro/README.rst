@@ -345,8 +345,23 @@ The names of the new files start with the one of the h5 file:
   says) and, where an image was saved, its frame in the tif; ``..._camera.tif`` has the images (*The full image*) as a time
   series of the axes **T, C, Y, X** (an ImageJ hyperstack: Fiji / ImageJ, ``tifffile.imread``; the time and the temperature are
   the labels of the frames), and ``..._camera_crop_<name of the ROI>.tif`` the pixels of each ROI which is a crop, the same kind
-  of tif. ImageJ cannot open files of more than 4 GB (BigTIFF): a longer series is split in ``..._part01.tif``,
-  ``..._part02.tif``... and the csv file has the columns ``tif file`` and ``tif frame`` (from 1, as ImageJ counts);
+  of tif. A series is always **one file**: with more than 3.5 GB of pixels (a classic tif is limited to 4 GB) it is a
+  **BigTIFF**, which ImageJ alone does not read (Fiji does, with the Bio-Formats importer, *File > Import > Bio-Formats*; so do
+  ``tifffile.imread`` and napari; the file is written one image at a time, so a series of any length does not have to fit in
+  memory); the csv file has the column ``tif frame`` (from 1, as ImageJ counts).
+  **What a tif says besides the pixels**: the time between the images (*Frame interval* of ImageJ) and, in the label of each
+  image, its time, the temperature and its exposure time (when it was recorded); the colors (the red, green and blue channels
+  are a composite with their lookup tables); the **size of a pixel** (the calibration of ImageJ, in um: *Image > Properties*) when
+  the camera told it; the display range of the camera (0 to 2^bits - 1); the make and the model of the camera, the software and
+  the date of the first image (the usual tags of a tif); and, in the description, the camera (model, serial number, bits, the
+  window and the binning of the sensor) and how the calibration was found. The camera is asked when the experiment starts and
+  what it says is saved in the h5 file (the attribute ``camera_info`` of the groups of the camera): the size of a pixel is
+  asked to the camera itself (a Thorlabs scientific camera and a uc480 / uEye one give the pitch of their sensor), the table of
+  the models of Thorlabs in ``camera_info.py`` is only the fallback. That size is **the pitch of the sensor, times the binning**:
+  with a lens or a microscope the size of a pixel *on the sample* is smaller, so the tif says it is the sensor plane until you
+  give the optics: ``--magnification 10`` (the sensor pitch divided by it) or ``--pixel-size 0.325`` (um on the sample,
+  measured with a ruler, binning included; it wins). A file written before this, or by a camera which says nothing (a Mock
+  one), has no size: the tif is in pixels, and ``--pixel-size`` calibrates it;
 * **the observations and the protocol**: ``..._experiment.txt`` is a text with the title, the sample, the operator, the protocol,
   the observations noted while the experiment ran (with the time since the start and the clock time), the instruments, the ROIs
   (and what each one gives), the integration times, the units and the list of the files which were written; the observations
@@ -361,7 +376,8 @@ unit you gave; the time is in seconds from the first measurement of the experime
 Options: ``--per-integration-time`` divides the values of the ROIs, the spectra and the crops of the spectra which were saved as
 they were measured by the integration time of each readout (``A.U./ms``; what was divided in the extension is not divided
 twice, and it says so),
-``--short-names`` (``ROI 1 [A.U.]`` instead of ``ROI 1 mean (454.2-464.6 nm) [A.U.]``), ``--no-spectra``, ``--no-tif``, ``--program`` (the
+``--short-names`` (``ROI 1 [A.U.]`` instead of ``ROI 1 mean (454.2-464.6 nm) [A.U.]``), ``--no-spectra``, ``--no-tif``,
+``--magnification M`` and ``--pixel-size UM`` (the calibration of the tif files, see above), ``--program`` (the
 set-point, cycle and phase of the ramp), ``--delimiter``, ``-o FOLDER``, ``--experiment N`` (the experiment of the file, the last one by
 default), ``--with-spectrometers`` (in the csv of the camera, add the temperature and the ROIs of the spectrometers at the readouts of
 the camera: the closest readout of the spectrometer, or ``--interpolate``). The spectra are read from the file a few hundred

@@ -127,65 +127,75 @@ class TestImagesNowAndThen:
         assert len(labels) == len([row for row in rows if row[-1] != '']) == 3
 
 
-class TestTheTifOfAnImageJLimit:
-    """ImageJ does not read BigTIFF: a long series of images is split in several classic tif files"""
+class TestALongSeriesIsOneBigTiff:
+    """A classic tif is limited to 4 GB, which ImageJ reads: a longer series of images is still one file, a BigTIFF"""
 
     @pytest.fixture(autouse=True)
     def tifffile(self, monkeypatch):
         tifffile = pytest.importorskip('tifffile')
-        monkeypatch.setattr(export, 'TIF_PART_BYTES', 2 * 6 * 8 * 2 + 5)  # (two images of 6 x 8 pixels of 16 bits)
+        monkeypatch.setattr(export, 'CLASSIC_TIF_BYTES', 2 * 6 * 8 * 2 + 5)  # (two images of 6 x 8 pixels of 16 bits)
         return tifffile
 
-    def test_the_images_are_in_several_files(self, h5saver, qapp, tmp_path, tifffile):
+    def test_the_images_are_in_one_bigtiff(self, h5saver, qapp, tmp_path, tifffile):
         path = write_log(h5saver, image_every=1)
 
         out = run_export(path, tmp_path)
 
-        names = sorted(file.name for file in out.glob('*_camera_part*.tif'))
-        assert names == [f'{path.stem}_camera_part0{n}.tif' for n in range(1, 6)] and not (out / f'{path.stem}_camera.tif').exists()
-        frames = []
-        for name in names:
-            with tifffile.TiffFile(out / name) as tif:
-                assert not tif.is_bigtiff
-                frames.append(tif.asarray().reshape(-1, 6, 8))
-        assert [len(part) for part in frames] == [2, 2, 2, 2, 1]
+        assert not list(out.glob('*_part*')) and [file.name for file in out.glob('*_camera*.tif')] == [
+            f'{path.stem}_camera.tif']
+        with tifffile.TiffFile(out / f'{path.stem}_camera.tif') as tif:
+            assert tif.is_bigtiff and tif.is_imagej
+            images = tif.asarray().reshape(-1, 6, 8)
+        assert len(images) == 9
         rows, columns = np.mgrid[0:6, 0:8]
-        for index, image in enumerate(np.concatenate(frames)):
+        for index, image in enumerate(images):
             assert np.array_equal(image, 10 * rows + columns + index)
 
-    def test_the_csv_files_say_which_file_and_frame(self, h5saver, qapp, tmp_path):
+    def test_it_says_what_a_classic_tif_says(self, h5saver, qapp, tmp_path, tifffile):
+        path = write_log(h5saver, image_every=1)
+
+        out = run_export(path, tmp_path)
+
+        with tifffile.TiffFile(out / f'{path.stem}_camera.tif') as tif:
+            metadata = tif.imagej_metadata
+            software = tif.pages[0].tags['Software'].value
+        assert metadata['frames'] == 9 and len(metadata['Labels']) == 9 and 'Camera' in metadata['Info']
+        assert 'lab_export' in software
+
+    def test_the_csv_says_the_frame_of_each_readout(self, h5saver, qapp, tmp_path):
         path = write_log(h5saver, image_every=1)
 
         out = run_export(path, tmp_path)
 
         header, rows = read_csv(out / f'{path.stem}_camera.csv')
-        assert header[-2:] == ['tif file', 'tif frame'] and len(rows) == 9
-        assert [(row[-2], row[-1]) for row in rows[:5]] == [
-            (f'{path.stem}_camera_part01.tif', 1.), (f'{path.stem}_camera_part01.tif', 2.),
-            (f'{path.stem}_camera_part02.tif', 1.), (f'{path.stem}_camera_part02.tif', 2.),
-            (f'{path.stem}_camera_part03.tif', 1.)]
+        assert header[-1] == 'tif frame' and 'tif file' not in header and len(rows) == 9
+        assert [row[-1] for row in rows] == [float(index) for index in range(1, 10)]
 
-    def test_the_readouts_without_an_image_have_no_file_and_no_frame(self, h5saver, qapp, tmp_path):
-        path = write_log(h5saver, image_every=4)  # (3 images: two files)
+    def test_the_readouts_without_an_image_have_no_frame(self, h5saver, qapp, tmp_path):
+        path = write_log(h5saver, image_every=4)  # (3 images)
 
         out = run_export(path, tmp_path)
 
-        header, rows = read_csv(out / f'{path.stem}_camera.csv')
-        assert header[-2:] == ['tif file', 'tif frame'] and len(rows) == 9
-        assert [row[-2:] for row in rows] == [
-            [f'{path.stem}_camera_part01.tif', 1.], ['', ''], ['', ''], ['', ''],
-            [f'{path.stem}_camera_part01.tif', 2.], ['', ''], ['', ''], ['', ''],
-            [f'{path.stem}_camera_part02.tif', 1.]]
+        _, rows = read_csv(out / f'{path.stem}_camera.csv')
+        assert [row[-1] for row in rows] == [1., '', '', '', 2., '', '', '', 3.]
 
-    def test_a_small_series_is_one_file(self, h5saver, qapp, tmp_path, monkeypatch):
-        monkeypatch.setattr(export, 'TIF_PART_BYTES', 10 ** 9)
+    def test_the_text_says_it_is_a_bigtiff(self, h5saver, qapp, tmp_path):
         path = write_log(h5saver, image_every=1)
 
         out = run_export(path, tmp_path)
 
-        assert (out / f'{path.stem}_camera.tif').exists() and not list(out.glob('*_part*'))
-        header, _ = read_csv(out / f'{path.stem}_camera.csv')
-        assert 'tif file' not in header
+        text = (out / f'{path.stem}_experiment.txt').read_text(encoding='utf-8-sig')
+        assert 'a BigTIFF' in text and 'Bio-Formats' in text
+
+    def test_a_small_series_is_a_classic_tif(self, h5saver, qapp, tmp_path, monkeypatch, tifffile):
+        monkeypatch.setattr(export, 'CLASSIC_TIF_BYTES', 10 ** 9)
+        path = write_log(h5saver, image_every=1)
+
+        out = run_export(path, tmp_path)
+
+        with tifffile.TiffFile(out / f'{path.stem}_camera.tif') as tif:
+            assert not tif.is_bigtiff and tif.is_imagej
+        assert 'BigTIFF' not in (out / f'{path.stem}_experiment.txt').read_text(encoding='utf-8-sig')
 
 
 class TestLongLogs:

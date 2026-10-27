@@ -60,6 +60,7 @@ from pymodaq.utils.h5modules.module_saving import (
     ExtensionSaver, DetectorTimeSaver, ActuatorTimeSaver, GroupModuleType)
 
 from pymodaq_plugins_thermospectro.camera import window_ranges
+from pymodaq_plugins_thermospectro.camera_info import read_camera_info
 from pymodaq_plugins_thermospectro.ramp import PHASE_CODES
 from pymodaq_plugins_thermospectro.rois import unique_names
 from pymodaq_plugins_thermospectro.unit_settings import DEFAULT_INTENSITY_UNITS
@@ -97,6 +98,20 @@ def pint_safe(units: str) -> str:
     except Exception:
         return ''
     return text
+
+
+def camera_info_of(unit) -> str:
+    """What the camera of a unit says about itself (see :mod:`.camera_info`) as json: '' for a unit which is not a camera
+    and for a camera which says nothing (a Mock one)"""
+    detector = unit.detector
+    if getattr(unit.settings, 'KIND', '') != 'camera' or detector is None:
+        return ''
+    plugin = getattr(detector, 'plugin', None)  # (the module of the Dashboard: its plugin holds the driver)
+    controller = getattr(plugin, 'controller', None)
+    if controller is None:
+        controller = getattr(detector, 'controller', None)
+    info = read_camera_info(controller)
+    return info.to_json() if info else ''
 
 
 def group_title(number: int, what: str) -> str:
@@ -266,6 +281,9 @@ class UnitRecording:
     n_channels: int
         How many channels the images of a camera have (the ROIs which give a number are measured on some of them, see
         :class:`~.camera.RectRoi`): saved as an attribute of their group
+    camera_info: str
+        What the camera said about itself when the experiment started (json, see :mod:`.camera_info`): its model, the
+        size of its pixels, its binning...; saved as an attribute of the groups of the camera, empty if it said nothing
     """
     number: int
     spectrum: bool = True
@@ -291,6 +309,7 @@ class UnitRecording:
     spectrum_units: str = DEFAULT_INTENSITY_UNITS
     spectrum_per_integration: bool = False
     n_channels: int = 1
+    camera_info: str = ''
 
     @classmethod
     def from_unit(cls, unit) -> 'UnitRecording':
@@ -317,7 +336,7 @@ class UnitRecording:
                    integration=settings.record_integration, intensity_units=settings.intensity_units,
                    value_units=settings.value_units, per_integration=settings.per_integration,
                    spectrum_units=settings.spectrum_units, spectrum_per_integration=settings.spectrum_per_integration,
-                   n_channels=getattr(unit, 'n_channels', 1))
+                   n_channels=getattr(unit, 'n_channels', 1), camera_info=camera_info_of(unit))
 
     @staticmethod
     def _check_crops(unit, crops: list):
@@ -607,6 +626,8 @@ class ThermoSpectroSaver(ExtensionSaver):
         number = recording.number
         common = {'unit': number, recording.detector_kind: recording.spectrometer, 'thermostat': recording.thermostat,
                   'integration_time_ms': recording.integration_time, 'readout_time_s': recording.readout_time}
+        if recording.camera_info:
+            common['camera_info'] = recording.camera_info
         crops = {f'{CROP}{index}': roi for index, roi in enumerate(recording.crops, 1)}
         for what in (SPECTRUM, IMAGE, ROIS, *crops, INTEGRATION, TEMPERATURE, PROGRAM):
             node = self.current_nodes.get(group_title(number, what))
