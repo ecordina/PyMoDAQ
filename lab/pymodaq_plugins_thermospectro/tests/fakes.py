@@ -27,6 +27,11 @@ class FakeDetector(QtCore.QObject):
         self.snaps = 0
         self.stopped_grabs = 0
         self.silent = False  # does not answer
+        self.restart_fixes = False  # a new initialization makes it answer again (a camera which had stopped)
+        self.init_delay = 20  # ms an initialization takes
+        self.init_fails = 0  # the next initializations which do not work
+        self.inits = 0  # initializations asked for
+        self.closes = 0  # closings asked for
         self.drop_next = 0  # the next snaps which are not answered
         self.in_flight = 0  # snaps waiting for their answer
         self.max_in_flight = 0
@@ -68,6 +73,25 @@ class FakeDetector(QtCore.QObject):
     def close(self):
         self.initialized_state = False
         self.init_signal.emit(False)
+
+    def init_hardware_ui(self, do_init=True):
+        """What the button of a module does: closing is done when it returns, initializing takes `init_delay` ms"""
+        if not do_init:
+            self.closes += 1
+            self.close()
+            return
+        self.inits += 1
+        QtCore.QTimer.singleShot(self.init_delay, self._initialized)
+
+    def _initialized(self):
+        if self.init_fails > 0:
+            self.init_fails -= 1
+            self.init_signal.emit(False)
+            return
+        self.initialized_state = True
+        if self.restart_fixes:
+            self.silent = False
+        self.init_signal.emit(True)
 
 
 class FakeCamera(FakeDetector):

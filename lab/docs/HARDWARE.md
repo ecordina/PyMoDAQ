@@ -30,6 +30,17 @@ needs the driver of its family:
 Check that it is seen: `python -c "from pylablib.devices import Thorlabs; print(Thorlabs.list_cameras_tlcam())"` (TSI) or
 `python -c "from pylablib.devices import uc480; print(uc480.list_cameras())"` (uc480).
 
+**For a long experiment on Windows** (a camera read out for hours or days):
+
+* **Close ThorCam / ThorImageCAM** (and any other program using the camera) before starting: the Thorlabs driver is made for one
+  program per camera, and a second one that stays connected can make the images stop coming.
+* **Turn off USB selective suspend**: Control Panel > Power Options > Change plan settings > Change advanced power settings >
+  USB settings > USB selective suspend setting > *Disabled* (for each power plan in use). Windows otherwise powers down a USB 3
+  camera that it finds idle between two readouts, and the images may stop coming after hours. Plug the camera directly into a USB 3
+  port of the computer (not a hub).
+* If the images stop anyway, the application reads out again after 30 s or more, closes the camera and initializes it again after
+  two readouts lost in a row, and counts them (*Missed readouts* and *Restarts* in the Status of the unit).
+
 **On Linux (and macOS), OpenCV must be the headless one.** `pymodaq_plugins_thorlabs` requires `opencv-python`, whose wheel
 ships its own Qt 5 and points Qt to it when it is imported (PyMoDAQ imports it with the plugins, before its window is made):
 PyMoDAQ and every command of the lab then stop at *Could not load the Qt platform plugin "xcb" in ".../cv2/qt/plugins" even

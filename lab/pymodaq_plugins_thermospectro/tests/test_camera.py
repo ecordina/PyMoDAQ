@@ -295,6 +295,111 @@ def bench(qtbot):
         bench.unit._release()
 
 
+class TestLostReadouts:
+    """A camera which stops sending images: the readouts are counted, and the camera is initialized again"""
+
+    @staticmethod
+    def quick(bench, timeout=0.2):
+        bench.unit.pending_timeout = lambda: timeout  # (the real one is 30 s at least)
+
+    def test_an_image_is_waited_for_much_less_than_a_spectrum(self, bench):
+        assert bench.unit.pending_timeout() == pytest.approx(30., abs=0.1)
+        bench.settings.child('integration_time').setValue(20000.)
+        bench.settings.child('readout_time').setValue(60.)
+
+        assert bench.unit.pending_timeout() == pytest.approx(2. * 20. + 30.)
+
+    def test_two_readouts_lost_in_a_row_restart_the_camera(self, bench):
+        self.quick(bench)
+        bench.camera.silent, bench.camera.restart_fixes = True, True
+
+        bench.unit.start_live(time.time())
+        bench.wait_for(1, timeout=20000)
+        bench.unit._release()
+
+        assert bench.camera.closes >= 1 and bench.camera.inits >= 1
+        assert bench.unit.n_reinits >= 1 and bench.unit.n_lost >= 2
+        assert bench.unit.n_lost_in_a_row == 0  # (images came again)
+        assert any('initialized again' in notice for notice in bench.notices)
+
+    def test_the_missed_readouts_and_the_restarts_are_shown(self, bench):
+        self.quick(bench)
+        bench.camera.silent, bench.camera.restart_fixes = True, True
+
+        bench.unit.start_live(time.time())
+        bench.wait_for(1, timeout=20000)
+        bench.unit._release()
+
+        status = bench.settings.child('status')
+        assert status['missed'] == bench.unit.n_missed >= 2
+        assert status['restarts'] == bench.unit.n_reinits >= 1
+        assert f'{bench.unit.n_missed} readouts missed' in bench.unit.status_text()
+
+    def test_a_late_readout_is_a_missed_one_too(self, bench):
+        bench.unit._pending = (time.time(), time.monotonic(), 20.)
+        bench.unit.state = UnitState.LIVE
+        bench.unit.n_skipped = 2
+        bench.unit.n_lost = 3
+
+        assert bench.unit.n_missed == 5
+
+    def test_the_counters_start_from_zero_with_the_experiment(self, bench):
+        bench.unit.start_live(time.time())
+        bench.qtbot.waitUntil(lambda: bench.unit.ready, timeout=10000)
+        bench.unit.n_skipped, bench.unit.n_lost, bench.unit.n_reinits = 4, 3, 2
+        bench.unit._show_counters()
+        assert bench.settings.child('status', 'missed').value() == 7
+
+        bench.unit.begin_run(time.time(), 0.)
+
+        assert bench.unit.n_missed == 0 and bench.unit.n_reinits == 0
+        assert bench.settings.child('status', 'missed').value() == 0
+        assert bench.settings.child('status', 'restarts').value() == 0
+
+    @pytest.mark.errors_expected
+    def test_a_camera_which_cannot_be_initialized_is_tried_again(self, bench):
+        self.quick(bench)
+        bench.unit.REINIT_TIMEOUT = 0.3
+        bench.unit.REINIT_WAITS = (0.2,)
+        bench.camera.silent, bench.camera.restart_fixes = True, True
+        bench.camera.init_fails = 1  # the first initialization does not work
+
+        bench.unit.start_live(time.time())
+        bench.wait_for(1, timeout=30000)
+        bench.unit._release()
+
+        assert bench.camera.inits >= 2
+        assert any('could not be initialized again' in notice for notice in bench.notices)
+        # the readouts of the time it took (0.3 s + 0.2 s, 0.1 s each) were not made: they are missed ones
+        assert bench.unit.n_skipped >= 4
+
+    def test_an_experiment_beginning_during_a_restart_does_not_cancel_it(self, bench):
+        self.quick(bench)
+        bench.camera.silent, bench.camera.restart_fixes = True, True
+        bench.camera.init_delay = 600
+        bench.unit.start_live(time.time())
+        bench.qtbot.waitUntil(lambda: bench.unit._reiniting, timeout=20000)
+
+        bench.unit.reset_counters()  # (what the beginning of an experiment does)
+
+        assert bench.unit._reiniting and bench.unit.n_reinits == 0
+        bench.wait_for(1, timeout=30000)
+        bench.unit._release()
+        assert bench.camera.inits >= 1
+
+    def test_the_camera_is_not_restarted_when_the_unit_is_released(self, bench):
+        self.quick(bench)
+        bench.camera.silent = True  # (nothing will ever fix it)
+        bench.unit.start_live(time.time())
+        bench.qtbot.waitUntil(lambda: bench.unit._reiniting, timeout=20000)
+
+        bench.unit._release()
+        inits = bench.camera.inits
+        bench.qtbot.wait(1500)
+
+        assert not bench.unit._reiniting and bench.camera.inits == inits
+
+
 class TestCameraUnit:
     def test_the_messages_call_it_the_camera(self, bench):
         unit = bench.unit

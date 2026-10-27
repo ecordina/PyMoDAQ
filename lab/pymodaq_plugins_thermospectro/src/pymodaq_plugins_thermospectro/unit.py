@@ -144,6 +144,14 @@ class Unit(QtCore.QObject):
 
     #: A module which delivers nothing is said to the user after this time (s) of live view
     SILENCE_NOTICE = 10.0
+    #: The detector is closed and initialized again when its readouts are lost (a camera which stopped sending images)
+    AUTO_REINIT = False
+    #: ... after this many readouts lost in a row
+    REINIT_AFTER = 2
+    #: The time (s) to wait before trying again after the 1st, 2nd... initialization which did not work (then the last)
+    REINIT_WAITS = (30., 60., 120., 300.)
+    #: The time (s) an initialization may take
+    REINIT_TIMEOUT = 60.
     #: What the detector of the unit is, in the messages
     WHAT = 'spectrometer'
     DATA = 'spectrum'
@@ -184,6 +192,19 @@ class Unit(QtCore.QObject):
         self.n_measurements = 0
         self.n_skipped = 0  # readouts which were not made because the previous one was not over
         self.n_lost = 0  # readouts whose spectrum never came back
+        self.n_lost_in_a_row = 0  # ... without any spectrum coming since the last of them
+        self.n_reinits = 0  # how many times the detector was closed and initialized again
+        self._reiniting = False  # the detector is being initialized again: nothing is read out
+        self._reinit_inited = False  # its initialization said it was done
+        self._reinit_failures = 0  # the initializations which did not work, since a spectrum came
+        self._down_since: Optional[float] = None  # when the readouts were stopped to initialize the detector again
+        self._reinit_deadline = 0.0
+        self._reinit_poll_timer = QtCore.QTimer(self)
+        self._reinit_poll_timer.setInterval(500)
+        self._reinit_poll_timer.timeout.connect(self._reinit_poll)
+        self._reinit_retry_timer = QtCore.QTimer(self)
+        self._reinit_retry_timer.setSingleShot(True)
+        self._reinit_retry_timer.timeout.connect(self._start_reinit)
         self._pending: Optional[tuple[float, float]] = None  # (epoch, monotonic) of the readout waiting for its spectrum
         self._started_at = 0.0
         self._run_started = 0.0  # time.monotonic() when the experiment began
@@ -430,6 +451,7 @@ class Unit(QtCore.QObject):
         self.origin = origin
         self.failed = False
         self._pending = None
+        self.reset_counters()
         self._warnings.clear()
         self._silent.clear()
         self._reported.clear()
@@ -464,6 +486,7 @@ class Unit(QtCore.QObject):
 
     def _release(self):
         self._timer.stop()
+        self._cancel_reinit()
         self._disconnect()
         self._pending = None
         self.state = UnitState.IDLE
@@ -483,7 +506,7 @@ class Unit(QtCore.QObject):
 
     @logged
     def _readout(self):
-        if self.state == UnitState.IDLE or self.failed or self.detector is None:
+        if self.state == UnitState.IDLE or self.failed or self.detector is None or self._reiniting:
             return
         if self._pending is not None:
             age = time.monotonic() - self._pending[1]
@@ -491,18 +514,127 @@ class Unit(QtCore.QObject):
                 # the previous spectrum is not here yet: the integration or the transfer takes longer than the
                 # readout. Never two readouts at once: the detector may not cope with it
                 self.n_skipped += 1
+                self._show_counters()
                 if self.n_skipped in (1, 10, 100, 1000):
                     logger.warning(f'{self.detector.title}: the readout is late ({self.n_skipped} skipped)')
                 return
             self.n_lost += 1
+            self.n_lost_in_a_row += 1
+            self._show_counters()
             logger.warning(f'{self.detector.title}: no {self.DATA} came back from the readout started {age:.1f} s ago, '
-                           'reading out again')
+                           f'reading out again ({self.n_missed} readouts missed)')
             self._pending = None
+            if self.AUTO_REINIT and self.n_lost_in_a_row >= self.REINIT_AFTER:
+                self._start_reinit()
+                return
         self._sync_integration()
         self._pending = (time.time(), time.monotonic(), self.integration_time_now())
         if self.thermostat is not None and self.thermostat.initialized_state:
             self.thermostat.get_actuator_value()
         self.detector.snap()
+
+    # ----------------------------------------------------------------------------------------------------------
+    # what was missed, and the detector which is initialized again
+    # ----------------------------------------------------------------------------------------------------------
+    @property
+    def n_missed(self) -> int:
+        """The readouts which gave nothing since the unit started (or the experiment began): those which were not
+        made because the previous one was still waiting for its data, and those which were given up"""
+        return self.n_skipped + self.n_lost
+
+    def reset_counters(self):
+        """Count from zero (the live view, or the experiment, begins)"""
+        self.n_skipped = self.n_lost = self.n_lost_in_a_row = self.n_reinits = self._reinit_failures = 0
+        if self._down_since is not None:  # (the detector is being initialized again: that is counted from now on)
+            self._down_since = time.monotonic()
+        self._show_counters()
+
+    def _show_counters(self):
+        status = self.settings.child('status')
+        for name, value in (('missed', self.n_missed), ('restarts', self.n_reinits)):
+            leaf = status.names.get(name)  # (a tree saved by an older version has no such leaf)
+            if leaf is not None and leaf.value() != value:
+                leaf.setValue(value)
+
+    def _cancel_reinit(self):
+        self._reinit_poll_timer.stop()
+        self._reinit_retry_timer.stop()
+        self._reiniting = False
+        self._reinit_inited = False
+        self._down_since = None
+
+    def _count_downtime(self):
+        """The readouts which were not made while the detector was being initialized again are missed ones"""
+        if self._down_since is not None:
+            self.n_skipped += int((time.monotonic() - self._down_since) / max(self.settings.readout_time, 1e-3))
+            self._down_since = None
+            self._show_counters()
+
+    def _start_reinit(self):
+        """Close the detector and initialize it again (a camera which stopped sending images: the plugin only gives up
+        on the readout, the camera stays as it is). The readouts start again once it is initialized, or after one of the
+        next attempts if it cannot be."""
+        detector = self.detector
+        if detector is None or self.state == UnitState.IDLE:
+            self._cancel_reinit()
+            return
+        self._reiniting = True
+        self._reinit_inited = False
+        self.n_reinits += 1
+        if self._down_since is None:
+            self._down_since = time.monotonic()
+        self._timer.stop()
+        self._pending = None
+        self._show_counters()
+        message = (f'{detector.title}: {self.n_lost_in_a_row} readouts lost in a row, it is closed and initialized '
+                   f'again (restart {self.n_reinits})')
+        logger.warning(message)
+        self.notice.emit(message)
+        try:
+            if detector.grab_state:
+                detector.stop_grab()
+            self._init_detector(False)  # (waits for the plugin to be closed)
+            self._init_detector(True)
+        except Exception:
+            logger.exception(f'{detector.title} could not be initialized again')
+        self._reinit_deadline = time.monotonic() + self.REINIT_TIMEOUT
+        self._reinit_poll_timer.start()
+
+    def _init_detector(self, do_init: bool):
+        """Press the init button of the detector (without a user interface the button does nothing: ask directly)"""
+        detector = self.detector
+        if getattr(detector, 'ui', True) is None and hasattr(detector, 'init_hardware'):
+            detector.init_hardware(do_init)
+        else:
+            detector.init_hardware_ui(do_init)
+
+    def _reinit_poll(self):
+        """Is the detector initialized again?"""
+        detector = self.detector
+        if detector is None or self.state == UnitState.IDLE:
+            self._cancel_reinit()
+            return
+        if self._reinit_inited and detector.initialized_state:
+            self._reinit_poll_timer.stop()
+            self._reiniting = False
+            self._count_downtime()
+            logger.info(f'{detector.title} is initialized again ({self.n_missed} readouts missed so far)')
+            self._requested_integration = None  # (the new plugin is told the integration time again)
+            self.apply_integration_time()
+            if not self.failed:
+                self.update_timing()
+                self._readout()
+            return
+        if time.monotonic() < self._reinit_deadline:
+            return
+        self._reinit_poll_timer.stop()
+        self._reinit_failures += 1
+        wait = self.REINIT_WAITS[min(self._reinit_failures, len(self.REINIT_WAITS)) - 1]
+        message = (f'{detector.title} could not be initialized again within {self.REINIT_TIMEOUT:g} s '
+                   f'(attempt {self._reinit_failures}), trying again in {wait:g} s')
+        logger.error(message)
+        self.notice.emit(message)
+        self._reinit_retry_timer.start(int(wait * 1000))
 
     @logged
     def _on_spectrum(self, dte: DataToExport):
@@ -510,6 +642,11 @@ class Unit(QtCore.QObject):
             return
         if self.detector is not None:
             self.recovered(Problem.SPECTROMETER, f'{self.detector.title} delivers data again')
+            if self.n_lost_in_a_row:
+                logger.info(f'{self.detector.title} delivers {self.DATA}s again after {self.n_lost_in_a_row} readouts '
+                            f'lost in a row ({self.n_missed} missed, {self.n_reinits} restarts)')
+        self.n_lost_in_a_row = 0
+        self._reinit_failures = 0
         pending, self._pending = self._pending, None
         if pending is None or self.state == UnitState.IDLE:
             return  # a spectrum nobody asked for (the module was grabbing on its own): shown, not measured
@@ -631,6 +768,10 @@ class Unit(QtCore.QObject):
     @logged
     def _on_module_init(self, module, initialized: bool):
         """A module of the unit was closed (or initialized)"""
+        if self._reiniting and module is self.detector:  # (closed on purpose, to be initialized again)
+            if initialized:
+                self._reinit_inited = True
+            return
         if initialized or self.state == UnitState.IDLE:
             return
         if module is self.thermostat:
@@ -674,6 +815,7 @@ class Unit(QtCore.QObject):
             raise RuntimeError('The unit must be read out (live) before an experiment starts')
         self.reset_series(origin)
         self.n_measurements = 0
+        self.reset_counters()  # (what was lost during the live view is not part of the experiment)
         self.runner = None
         self.ramp_state = None
         self.last_sent = None
@@ -917,6 +1059,8 @@ class Unit(QtCore.QObject):
             text += f', set-point {state.setpoint:.4g} {self.units}'
         if self.temperature is not None:
             text += f', measured {self.temperature.value:.4g} {self.units}'
+        if self.n_missed:
+            text += f', {self.n_missed} readouts missed'
         return text.strip()
 
 
@@ -937,6 +1081,7 @@ class CameraUnit(Unit):
     """
     channels_changed = QtCore.Signal(int)
     _n_channels = 0  # (how many channels the last image had: 0 before the first one)
+    AUTO_REINIT = True  # (a camera which stops sending images has to be closed and opened again)
     WHAT = 'camera'
     DATA = 'image'
     DIMENSION = '2D'
@@ -945,6 +1090,11 @@ class CameraUnit(Unit):
     @property
     def label(self) -> str:
         return 'Camera'
+
+    def pending_timeout(self) -> float:
+        """The time (s) after which an image which did not come back is given up: the plugin of a camera gives up on
+        its own when a frame does not come in 20 s, there is no point in waiting for it much longer"""
+        return max(30., 2. * self.acquisition_time() + 30.)
 
     def _store_data(self, dte: DataToExport) -> bool:
         found = extract_frame(dte)

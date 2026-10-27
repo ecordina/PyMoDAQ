@@ -435,6 +435,18 @@ class TestOneReadoutAtATime:
         assert bench.unit.n_lost == 1
         assert bench.detector.snaps >= 3
 
+    def test_a_spectrometer_is_not_closed_and_initialized_again(self, qtbot):
+        bench = Bench(qtbot)
+        bench.unit.pending_timeout = lambda: 0.2
+        bench.detector.silent = True
+
+        bench.unit.start_live(time.time())
+        qtbot.waitUntil(lambda: bench.unit.n_lost >= 3, timeout=20000)
+        bench.unit._release()
+
+        assert bench.detector.closes == 0 and bench.unit.n_reinits == 0
+        assert bench.unit.n_missed >= 3
+
     def test_the_time_to_wait_for_a_spectrum_depends_on_the_times_of_the_unit(self, bench):
         bench.settings.child('integration_time').setValue(60000.)
         bench.settings.child('readout_time').setValue(70.)

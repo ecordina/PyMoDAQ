@@ -287,6 +287,11 @@ def _unit_definition(number: int, rois: Sequence[Roi], enabled: bool, kind: str,
             {'title': 'Set-point:', 'name': 'setpoint', 'type': 'float', 'value': 0.0, 'readonly': True},
             {'title': 'Temperature:', 'name': 'temperature', 'type': 'float', 'value': 0.0, 'readonly': True},
             {'title': 'Measurements:', 'name': 'measurements', 'type': 'int', 'value': 0, 'readonly': True},
+            {'title': 'Missed readouts:', 'name': 'missed', 'type': 'int', 'value': 0, 'readonly': True,
+             'tip': 'The readouts which gave nothing since the live view or the experiment began: the ones which were '
+                    'not made because the previous one had not come back, and the ones which were given up'},
+            {'title': 'Restarts:', 'name': 'restarts', 'type': 'int', 'value': 0, 'readonly': True,
+             'tip': 'How many times the camera was closed and initialized again because its images did not come'},
         ]},
     ]}
 

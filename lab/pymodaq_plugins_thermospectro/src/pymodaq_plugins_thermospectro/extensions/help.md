@@ -249,3 +249,7 @@ extension says so, with its last set-point. When the extension is closed during 
 initial temperatures at once (the proposed answer) or to bring them back gradually; when PyMoDAQ itself is quit, they are
 set at once. When no ramp is going on (the controllers are held, or the ramps are over) there is nothing to bring back: the
 dialog only asks whether to close the log, and the controllers stay where they are.
+
+A **camera** which stops sending images is read out again after a short time (at least 30 s), and closed and initialized again
+by itself after two readouts lost in a row (the *Restarts* in its Status). The *Missed readouts* in the Status of the unit count
+the readouts which gave nothing since the live view or the experiment began; the status bar tells it too.
