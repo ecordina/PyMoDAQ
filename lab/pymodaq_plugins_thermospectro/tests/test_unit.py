@@ -1,4 +1,5 @@
 import math
+import re
 import time
 
 import numpy as np
@@ -35,9 +36,11 @@ class Bench:
         self.unit.attach()
         self.measurements = []
         self.notices = []
+        self.events = []
         self.problems = []
         self.unit.measurement.connect(self.measurements.append)
         self.unit.notice.connect(self.notices.append)
+        self.unit.journal.connect(self.events.append)
         self.unit.problem.connect(lambda unit, kind, message: self.problems.append((kind, message)))
 
     def wait_for(self, n, timeout=10000):
@@ -504,6 +507,336 @@ class TestOneReadoutAtATime:
         assert bench.unit.pending_timeout() == pytest.approx(10., abs=0.1)  # (never less)
 
 
+@pytest.mark.errors_expected  # (a lost detector is logged as an error)
+class TestALostDetector:
+    """A detector which gives nothing is closed and initialized again 'Restart attempts' times, then it is lost"""
+
+    @staticmethod
+    def silent_bench(qtbot, after=1, attempts=2, fixes=False, thermostat=True):
+        bench = Bench(qtbot, thermostat=thermostat)
+        bench.unit.pending_timeout = lambda: 0.2
+        bench.detector.silent, bench.detector.restart_fixes = True, fixes
+        bench.settings.child('restart_after').setValue(after)
+        bench.settings.child('restart_attempts').setValue(attempts)
+        return bench
+
+    @staticmethod
+    def wait_until_lost(bench, timeout=20000):
+        bench.qtbot.waitUntil(lambda: bench.unit.failed, timeout=timeout)
+
+    def test_the_default_is_three_attempts_and_it_can_be_changed_during_an_experiment(self, bench):
+        assert bench.settings.restart_attempts == 3
+
+        bench.settings.lock(True)
+
+        assert bench.settings.child('restart_attempts').opts['enabled']
+        assert not bench.settings.child('readout_time').opts['enabled']
+
+    def test_it_is_restarted_as_many_times_as_told_and_then_lost(self, qtbot):
+        bench = self.silent_bench(qtbot, after=1, attempts=2)
+
+        bench.unit.start_live(time.time())
+        self.wait_until_lost(bench)
+
+        assert bench.detector.closes == 2 and bench.detector.inits == 2 and bench.unit.n_reinits == 2
+        assert len(bench.problems) == 1
+        kind, message = bench.problems[0]
+        assert kind == Problem.SPECTROMETER and 'lost' in message and 'after 2 restarts' in message
+        assert bench.unit.state == UnitState.LIVE and not bench.unit._timer.isActive()
+        snaps = bench.detector.snaps
+        qtbot.wait(500)
+        assert bench.detector.snaps == snaps  # (it is not read out any more)
+
+    def test_each_restart_is_told_for_the_record_of_the_experiment(self, qtbot):
+        bench = self.silent_bench(qtbot, after=1, attempts=2)
+
+        bench.unit.start_live(time.time())
+        self.wait_until_lost(bench)
+
+        assert len(bench.events) == 2  # (the loss itself is the problem the extension writes)
+        assert 'closed and initialized again (restart 1 of 2' in bench.events[0]
+        assert 'closed and initialized again (restart 2 of 2' in bench.events[1]
+        assert all(event.startswith('Spectro1') for event in bench.events)
+
+    def test_the_data_coming_back_after_a_restart_are_told_for_the_record(self, qtbot):
+        bench = self.silent_bench(qtbot, after=1, attempts=3)
+        bench.unit.start_live(time.time())
+        qtbot.waitUntil(lambda: bench.detector.closes >= 1, timeout=20000)
+        bench.detector.silent = False
+
+        bench.wait_for(1)
+        bench.unit._release()
+
+        again = [event for event in bench.events if 'delivers spectra again' in event]
+        assert len(again) == 1
+        assert re.fullmatch(r'Spectro1 delivers spectra again after \d+ readouts? missed in a row and 1 restart', again[0])
+
+    def test_a_thermostat_which_answers_again_is_told_for_the_record(self, qtbot):
+        bench = Bench(qtbot)
+        bench.run()
+        bench.wait_for(2)
+        bench.unit.fail(Problem.THERMOSTAT_SILENT, 'No temperature', halt=False)
+        bench.events.clear()
+
+        bench.thermostat.get_actuator_value()
+        qtbot.waitUntil(lambda: bool(bench.events), timeout=5000)
+        bench.unit._release()
+
+        assert bench.events == ['Spectrometer 1: Thermo1 gives its temperature again']
+
+    def test_nothing_is_told_for_the_record_when_all_goes_well(self, qtbot):
+        bench = Bench(qtbot)
+        bench.unit.start_live(time.time())
+        bench.wait_for(5)
+        bench.unit._release()
+
+        assert bench.events == []
+
+    def test_each_attempt_needs_as_many_missed_readouts_in_a_row_as_the_unit_says(self, qtbot):
+        bench = self.silent_bench(qtbot, after=2, attempts=1)
+
+        bench.unit.start_live(time.time())
+        self.wait_until_lost(bench)
+
+        assert bench.unit.n_lost == 4 and bench.detector.closes == 1  # (2 missed, a restart, 2 missed: lost)
+        assert 'after 1 restart)' in bench.problems[0][1] and '2 readouts missed in a row' in bench.problems[0][1]
+
+    def test_with_no_attempt_it_is_lost_at_the_missed_readouts_without_being_restarted(self, qtbot):
+        bench = self.silent_bench(qtbot, after=2, attempts=0)
+
+        bench.unit.start_live(time.time())
+        self.wait_until_lost(bench)
+
+        assert bench.unit.n_lost == 2 and bench.detector.closes == 0 and bench.unit.n_reinits == 0
+        assert 'not restarted' in bench.problems[0][1]
+
+    def test_a_detector_which_gives_data_again_is_not_lost_and_the_attempts_start_again(self, qtbot):
+        bench = self.silent_bench(qtbot, after=1, attempts=2)
+
+        bench.unit.start_live(time.time())
+        qtbot.waitUntil(lambda: bench.detector.closes >= 1, timeout=20000)
+        bench.detector.silent = False  # (it answers again after the first restart)
+        bench.wait_for(1)
+
+        assert not bench.unit.failed and bench.unit._attempts == 0 and bench.unit.n_lost_in_a_row == 0
+        assert bench.problems == []
+
+        bench.detector.silent = True  # (and stops again: it has all its attempts again)
+        self.wait_until_lost(bench)
+
+        assert bench.detector.closes == 3  # (1, then 2 more)
+
+    def test_a_detector_which_cannot_be_initialized_again_is_lost_after_the_attempts(self, qtbot):
+        bench = self.silent_bench(qtbot, after=1, attempts=2)
+        bench.detector.init_fails = 10
+        bench.unit.REINIT_TIMEOUT = 0.2
+        bench.unit.REINIT_WAITS = (0.05, 0.05)
+
+        bench.unit.start_live(time.time())
+        self.wait_until_lost(bench)
+
+        assert bench.detector.closes == 2
+        assert 'could not be initialized again' in bench.problems[0][1] and 'lost' in bench.problems[0][1]
+
+    def test_it_is_not_given_up_on_for_missed_readouts_if_it_is_told_never_to_restart(self, qtbot):
+        bench = self.silent_bench(qtbot, after=0, attempts=1)
+
+        bench.unit.start_live(time.time())
+        qtbot.waitUntil(lambda: bench.unit.n_lost >= 6, timeout=20000)
+        bench.unit._release()
+
+        assert not bench.unit.failed and bench.detector.closes == 0 and bench.problems == []
+
+    def test_the_time_without_data_decides_only_for_a_detector_which_is_never_restarted(self, qtbot):
+        bench = Bench(qtbot, thermostat=False)
+        bench.run(now=0.)
+        bench.unit.spectrum.time -= 1000.
+
+        bench.settings.child('restart_after').setValue(2)
+        assert bench.unit.silent_for(time.monotonic(), 30.) is None  # (the restarts decide)
+
+        bench.settings.child('restart_after').setValue(0)
+        found = bench.unit.silent_for(time.monotonic(), 30.)
+        assert found is not None and found[0] == Problem.SPECTROMETER
+
+    def test_the_thermostat_is_read_while_the_detector_gives_nothing(self, qtbot):
+        bench = self.silent_bench(qtbot, after=0)
+
+        bench.unit.start_live(time.time())
+        qtbot.waitUntil(lambda: bench.unit.n_lost >= 1, timeout=20000)  # (a readout is waiting for its data)
+        reads = bench.thermostat.reads
+        qtbot.wait(700)
+        bench.unit._release()
+
+        assert bench.thermostat.reads >= reads + 4  # (a readout every 0.1 s: the thermostat is not silent for that)
+
+    def test_the_thermostat_is_read_while_the_detector_is_initialized_again(self, qtbot):
+        bench = self.silent_bench(qtbot, after=1, attempts=3)
+        bench.detector.init_delay = 2000
+
+        bench.unit.start_live(time.time())
+        qtbot.waitUntil(lambda: bench.unit._reiniting, timeout=20000)
+        reads = bench.thermostat.reads
+        qtbot.wait(700)
+        bench.unit._release()
+
+        assert bench.thermostat.reads >= reads + 4
+
+    def test_the_status_says_that_it_is_lost(self, qtbot):
+        bench = self.silent_bench(qtbot, after=1, attempts=0)
+
+        bench.unit.start_live(time.time())
+        self.wait_until_lost(bench)
+
+        assert 'Spectro1 LOST' in bench.unit.status_text()
+
+    def test_a_lost_detector_is_read_out_again_when_it_is_asked_to_with_all_its_attempts(self, qtbot):
+        bench = self.silent_bench(qtbot, after=1, attempts=1, fixes=False)
+        bench.unit.start_live(time.time())
+        self.wait_until_lost(bench)
+        bench.detector.silent = False  # (the instrument is back)
+
+        bench.unit.revive()
+
+        assert not bench.unit.failed and bench.unit._attempts == 0 and bench.unit._timer.isActive()
+        bench.wait_for(1)
+        n = bench.detector.snaps
+        bench.unit.revive()  # (nothing to read out again: nothing happens)
+        assert bench.detector.snaps == n
+        bench.unit._release()
+
+    def test_a_new_experiment_tries_a_detector_which_was_lost_in_the_live_view(self, qtbot):
+        bench = self.silent_bench(qtbot, after=1, attempts=0, fixes=True)
+        bench.unit.start_live(time.time())
+        self.wait_until_lost(bench)
+        bench.detector.silent = False
+        bench.unit.thermostat_failed = True  # (from an earlier experiment)
+
+        bench.unit.begin_run(time.time(), 0.)
+
+        assert not bench.unit.failed and not bench.unit.thermostat_failed and bench.unit._attempts == 0
+        bench.wait_for(1)
+        bench.unit._release()
+
+
+@pytest.mark.errors_expected  # (a failure is logged as an error)
+class TestUnitsWhichShareAThermostat:
+    """The camera next to a spectrometer reads the temperature of the thermostat the spectrometer drives"""
+
+    class Clock:
+        now = 0.
+
+    @classmethod
+    def pair(cls, qtbot):
+        thermostat = FakeThermostat('Thermo1')
+        detectors = [FakeDetector('Spectro1'), FakeDetector('Spectro2')]
+        manager = FakeManager(thermostat, *detectors)
+        clock = cls.Clock()
+        units = []
+        for number, detector in enumerate(detectors, 1):
+            settings = UnitSettings(Parameter.create(**unit_definition(number, default_rois(number))), number)
+            settings.set_modules([detector.title], ['Thermo1'], detector.title, 'Thermo1')
+            settings.child('integration_time').setValue(20.)
+            settings.child('readout_time').setValue(0.1)
+            unit = Unit(settings, manager)
+            unit.attach()
+            units.append(unit)
+        driver, reader = units
+        reader.settings.child('ramp', 'run').setValue(False)  # (it only reads the temperature)
+        driver.settings.child('ramp', 'initial').setValue(20.)
+        driver.settings.child('ramp', 'final').setValue(30.)
+        driver.settings.child('ramp', 'velocity').setValue(60.)
+        driver.settings.refresh_ramp()
+        for unit in units:
+            unit.peers = lambda units=units: units
+            unit.clock = lambda: clock.now
+            unit.start_live(time.time())
+        qtbot.waitUntil(lambda: all(unit.ready for unit in units), timeout=10000)
+        for unit in units:
+            unit.begin_run(time.time(), 0.)
+        return driver, reader, thermostat, clock
+
+    @staticmethod
+    def tick(unit, clock, now):
+        clock.now = now
+        return unit.program_tick(now)
+
+    @staticmethod
+    def release(*units):
+        for unit in units:
+            unit._release()
+
+    def test_a_unit_knows_whether_another_one_reads_its_thermostat(self, qtbot):
+        driver, reader, thermostat, clock = self.pair(qtbot)
+
+        assert driver.thermostat_read_by_others() and reader.thermostat_read_by_others()
+        reader.fail(Problem.SPECTROMETER, 'lost')
+        assert not driver.thermostat_read_by_others()  # (a lost one reads nothing)
+        self.release(driver, reader)
+
+    def test_the_ramp_of_a_lost_spectrometer_goes_on_while_the_other_unit_reads_the_temperature(self, qtbot):
+        driver, reader, thermostat, clock = self.pair(qtbot)
+        self.tick(driver, clock, 5.)
+
+        driver.fail(Problem.SPECTROMETER, 'lost')
+
+        assert driver.failed and not driver.returning and driver.runner.mode == 'cycling'
+        assert driver.thermostat_failed is False
+        self.tick(driver, clock, 7.)
+        assert thermostat.targets[-1] == pytest.approx(27.)  # (the ramp is not stopped)
+        self.release(driver, reader)
+
+    def test_it_is_brought_back_as_soon_as_the_other_unit_does_not_read_any_more(self, qtbot):
+        driver, reader, thermostat, clock = self.pair(qtbot)
+        self.tick(driver, clock, 5.)
+        driver.fail(Problem.SPECTROMETER, 'lost')
+        driver.release_orphan_program(5.)
+        assert not driver.returning  # (the other one reads it)
+
+        events = []
+        driver.journal.connect(events.append)
+        reader.fail(Problem.SPECTROMETER, 'lost too')
+        clock.now = 6.
+        driver.release_orphan_program(6.)
+
+        assert driver.returning
+        assert len(events) == 1 and 'no other unit reads the temperature any more' in events[0]
+        self.tick(driver, clock, 7.)
+        assert thermostat.targets[-1] < 26.  # (on its way down)
+        self.release(driver, reader)
+
+    def test_the_ramp_of_a_lost_spectrometer_is_brought_back_if_nobody_else_reads_the_thermostat(self, qtbot):
+        driver, reader, thermostat, clock = self.pair(qtbot)
+        reader.thermostat = None  # (not the same thermostat)
+        self.tick(driver, clock, 5.)
+
+        driver.fail(Problem.SPECTROMETER, 'lost')
+
+        assert driver.returning
+        self.release(driver, reader)
+
+    def test_a_failed_thermostat_is_noted_for_the_experiment(self, qtbot):
+        driver, reader, thermostat, clock = self.pair(qtbot)
+
+        driver.fail(Problem.THERMOSTAT_SILENT, 'silent')
+        reader.fail(Problem.THERMOSTAT_LOST, 'closed')
+
+        assert driver.thermostat_failed and reader.thermostat_failed
+        assert not driver.failed and not reader.failed  # (the spectrometers go on)
+        self.release(driver, reader)
+
+    def test_the_watchdog_goes_on_watching_a_ramp_which_goes_on_for_a_lost_detector(self, qtbot):
+        driver, reader, thermostat, clock = self.pair(qtbot)
+        self.tick(driver, clock, 5.)
+        driver.fail(Problem.SPECTROMETER, 'lost')
+        driver.temperature.time -= 100.
+
+        found = driver.silent_for(time.monotonic(), 30.)
+
+        assert found is not None and found[0] == Problem.THERMOSTAT_SILENT
+        self.release(driver, reader)
+
+
 class TestFirstReadout:
     def test_the_first_measurement_of_an_experiment_comes_after_the_integration_time(self, qtbot):
         bench = Bench(qtbot)
@@ -778,6 +1111,7 @@ class TestStop:
 @pytest.mark.errors_expected  # (a failure is logged as an error)
 class TestFailures:
     def test_a_silent_spectrometer_is_detected_and_the_thermostat_is_sent_back(self, bench):
+        bench.settings.child('restart_after').setValue(0)  # (the time decides: with restarts, they do, see TestALostDetector)
         bench.program(initial=20., final=30., velocity=60.)
         bench.run(now=0.)
         bench.tick(5.)

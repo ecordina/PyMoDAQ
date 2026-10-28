@@ -64,7 +64,7 @@ from pymodaq_plugins_thermospectro.camera_widgets import HINT as CAMERA_HINT
 from pymodaq_plugins_thermospectro.ramp import END_AT_FINAL, END_AT_INITIAL, format_duration
 from pymodaq_plugins_thermospectro.roi_manager import HINT
 from pymodaq_plugins_thermospectro.rois import RoiStore, default_store_path
-from pymodaq_plugins_thermospectro.saving import (NoteBundle, ThermoSpectroSaver, UnitRecording, build_dtes,
+from pymodaq_plugins_thermospectro.saving import (AUTO_NOTE, NoteBundle, ThermoSpectroSaver, UnitRecording, build_dtes,
                                                   folder_problem)
 from pymodaq_plugins_thermospectro.saving_panel import NOTE_LIMIT, SavingPanel, SavingStore, default_saving_path
 from pymodaq_plugins_thermospectro.unit import CameraUnit, Measurement, Problem, Unit, UnitState, logged
@@ -151,8 +151,10 @@ class ThermoSpectro(CustomExt):
             else:
                 unit = Unit(UnitSettings(self.settings.child(f'unit{number}'), number), self.modules_manager,
                             parent=self)
+            unit.peers = lambda: self.units  # (a thermostat can be read by several units: see Unit.fail)
             unit.measurement.connect(self._on_measurement)
             unit.notice.connect(self.status_signal.emit)
+            unit.journal.connect(self._record_event)
             unit.problem.connect(self._on_unit_problem)
             unit.axis_units_changed.connect(lambda units, u=unit: self._on_axis_units(u, units))
             if isinstance(unit, CameraUnit):
@@ -233,10 +235,12 @@ class ThermoSpectro(CustomExt):
                 {'title': 'Duration:', 'name': 'hours', 'type': 'float', 'value': 24.0, 'min': 0.0001, 'suffix': 'h',
                  'tip': 'How long the log lasts when it is for a given time (48 for two days)'},
                 {'title': 'Stop if no data for:', 'name': 'watchdog', 'type': 'float', 'value': 30.0, 'min': 0.,
-                 'suffix': 's', 'tip': 'The ramp of a unit is brought back to its initial value if its spectrometer '
-                                       'or its thermostat does not deliver anything for this long (at least a few '
-                                       'readout times); a unit which holds a temperature (or only records) is told '
-                                       'and goes on. 0: never'},
+                 'suffix': 's', 'tip': 'The ramp of a unit is brought back to its initial value if its thermostat does not '
+                                       'deliver anything for this long (at least a few readout times); the log goes '
+                                       'on. For a spectrometer or a camera it is the "Restart after missed" and '
+                                       '"Restart attempts" of its unit which decide (this time only applies to one '
+                                       'whose "Restart after missed" is 0: its ramp is then brought back, and a unit '
+                                       'which holds a temperature or only records is told and goes on). 0: never'},
                 {'title': 'Plot the last:', 'name': 'history', 'type': 'float', 'value': 0.0, 'min': 0.,
                  'suffix': 'min', 'tip': '0: plot everything since the start'},
                 {'title': 'Elapsed:', 'name': 'elapsed', 'type': 'str', 'value': '', 'readonly': True},
@@ -1154,6 +1158,19 @@ class ThermoSpectro(CustomExt):
         self.saving_panel.show_note(epoch, epoch - self._origin, text)
         return True
 
+    def _record_event(self, text: str):
+        """Write what happened to an instrument in the file of the experiment, as an observation marked ``[auto]``
+
+        It has its time, and is listed in the Saving window like the observations of the user. Nothing is written when
+        there is no file (no experiment runs, or the log is not saved): the status bar and the dialogs tell it anyway.
+        """
+        if not self._can_note():
+            return
+        epoch = time.time()
+        text = f'{AUTO_NOTE} {" ".join(str(text).split())}'[:NOTE_LIMIT]
+        self._worker.save_note(epoch, text)
+        self.saving_panel.show_note(epoch, epoch - self._origin, text)
+
     # ----------------------------------------------------------------------------------------------------------
     # locking
     # ----------------------------------------------------------------------------------------------------------
@@ -1292,6 +1309,8 @@ class ThermoSpectro(CustomExt):
                 return
         self.set_action_enabled(WorkFlowActions.START, False)
         self.set_action_enabled(WorkFlowActions.STOP, True)
+        for unit in units:
+            unit.revive()  # (a spectrometer or a camera which was lost in the live view is read out again)
         missing = self._missing_data()
         if missing:
             # the first measurement must have everything, or the arrays of the file would not line up
@@ -1409,6 +1428,7 @@ class ThermoSpectro(CustomExt):
             return
         now = time.perf_counter()
         for unit in self._running_units():
+            unit.release_orphan_program(now)  # (a ramp which went on for a lost detector: nobody reads it any more?)
             unit.program_tick(now)
         self._check_watchdogs()
         self._show_status()
@@ -1419,7 +1439,7 @@ class ThermoSpectro(CustomExt):
             self.stop_run(reason='The duration of the log is over', ask=False)
             return
         if self._experiment_over():
-            self._finish_run(self._over_message())
+            self._finish_run(self._over_message(), record=self._nothing_to_read())
 
     #: s after the start of an experiment from which the user is told that the file cannot be read yet by another program
     SWMR_NOTICE = 20.0
@@ -1474,21 +1494,37 @@ class ThermoSpectro(CustomExt):
         return [unit for unit in self.units if unit.state == UnitState.RUNNING]
 
     def _experiment_over(self) -> bool:
-        """Every ramp is over and none of the units goes on logging after it (the units without ramp only record until
-        Stop; a unit whose ramps are over stays where they ended and goes on, see ``Unit.after_program``), or nothing can
-        be read any more"""
+        """Every spectrometer and camera is lost, or every ramp is over and none of the units goes on logging after it
+        (the units without ramp only record until Stop; a unit whose ramps are over stays where they ended and goes on,
+        see ``Unit.after_program``)
+
+        One which is lost does not stop the experiment while another is read out (nor does its ramp, which is brought
+        back to the initial temperature, take part in what ends it, unless another unit reads its thermostat and it goes
+        on, see ``Unit.fail``); a thermostat which fails never does (its unit goes on recording without the temperature, and
+        does not wait for a ramp any more). When nothing can be read any more the experiment ends once the ramps are back at
+        their initial temperature.
+        """
         units = self._experiment_units()
         if not units:
             return False
-        programmed = [unit for unit in units if unit.program is not None]
-        holding = any(unit.hold_target is not None for unit in units)
-        if programmed and (self._ending or not holding):
-            return all(unit.program_over for unit in programmed)  # (a held unit stays where it is when the log ends)
-        return all(unit.failed for unit in units)  # (a held temperature is logged until Stop or the end of the duration)
+        if all(unit.failed for unit in units):
+            return all(unit.program_over for unit in units)
+        taking_part = [unit for unit in units if not unit.failed or unit.ramp_kept]
+        programmed = [unit for unit in taking_part if unit.program is not None and not unit.thermostat_failed]
+        holding = any(unit.hold_target is not None for unit in taking_part)
+        if self._ending or (programmed and not holding):
+            return all(unit.program_over for unit in units)  # (a held unit stays where it is when the log ends)
+        return False  # (a held temperature is logged until Stop or the end of the duration)
+
+    def _nothing_to_read(self) -> bool:
+        """Every spectrometer and camera of the experiment is lost"""
+        units = self._experiment_units()
+        return bool(units) and all(unit.failed for unit in units)
 
     def _over_message(self) -> str:
-        programmed = [unit for unit in self._experiment_units() if unit.program is not None]
-        return 'The temperature ramps are over' if programmed else 'Nothing can be read any more'
+        if self._nothing_to_read():
+            return 'Nothing can be read any more: every spectrometer and camera is lost'
+        return 'The temperature ramps are over'
 
     def _show_status(self):
         units = self._experiment_units()
@@ -1581,22 +1617,47 @@ class ThermoSpectro(CustomExt):
     def _on_unit_problem(self, unit: Unit, kind: Problem, message: str):
         """A module of a unit does not work: the unit has done what it can for its thermostat, the user is told"""
         kind = Problem(kind)
+        parts = [message]
         if kind == Problem.THERMOSTAT_LOST:
             last = f'{unit.last_sent:.4g} {unit.units}' if unit.last_sent is not None else 'unknown'
-            text = (f'{message}. It cannot be returned to its initial temperature by the extension: its last '
-                    f'set-point was {last}. Check the thermostat.')
+            parts = [f'{message}. It cannot be returned to its initial temperature by the extension: its last '
+                     f'set-point was {last}. Check the thermostat.']
         elif unit.returning:
-            text = f'{message}\n\nThe set-point is brought back to the initial temperature.'
-        else:
-            text = message
-        self._notify('Problem', text, error=True)
+            parts.append('The set-point is brought back to the initial temperature.')
+        elif unit.ramp_kept:
+            parts.append(f'Its ramp goes on: another unit reads the temperature of {unit.thermostat.title}.')
+        consequence = self._consequence(unit, kind)
+        if consequence:
+            parts.append(consequence)
+        self._notify('Problem', '\n\n'.join(parts), error=True)
         if self._run_active:
+            # (the file says what happened to the instrument, and when)
+            self._record_event(' '.join(part if part.rstrip().endswith(('.', '!', '?')) else f'{part}.' for part in parts))
+            if kind == Problem.SPECTROMETER and unit.failed and self._saving:
+                self._module_and_data_saver.release_unit(unit.number)  # (SWMR does not wait for what it will not send)
             self._on_ramp_tick()  # (the experiment may be over)
 
-    def _finish_run(self, message: str, abort: bool = False):
+    def _consequence(self, unit: Unit, kind: Problem) -> str:
+        """What the problem of a module changes for the experiment, to tell the user ('' if nothing)"""
+        if not self._run_active:
+            return ''
+        if kind == Problem.SPECTROMETER and unit.failed:
+            others = [other for other in self._experiment_units() if not other.failed]
+            if others:
+                names = ', '.join(f'{other.label} ({other.title})' for other in others)
+                return f'The experiment goes on with {names}.'
+            return 'No spectrometer or camera is read out any more: the experiment ends when the thermostats are back.'
+        if kind in (Problem.THERMOSTAT_SILENT, Problem.THERMOSTAT_LOST):
+            return ('The experiment goes on: the spectrometers and cameras are still read out and recorded, '
+                    'without the temperature of this thermostat.')
+        return ''
+
+    def _finish_run(self, message: str, abort: bool = False, record: bool = False):
         """End the experiment: the thermostats are where they should be (or the user said to stop right there)
 
-        Each step may fail (a lost thermostat, a full disk...) without keeping the following ones from being done.
+        Each step may fail (a lost thermostat, a full disk...) without keeping the following ones from being done. With
+        `record` the file says why it ends (an observation marked ``[auto]``: the end of a log which was asked for does not
+        need it).
         """
         if not self._run_active or self._finishing:
             return
@@ -1604,6 +1665,8 @@ class ThermoSpectro(CustomExt):
         units = self._running_units()
         problems = []
         try:
+            if record:
+                self._record_event(f'The experiment ends. {message}')
             self._ramp_timer.stop()
             now = time.perf_counter()
             for unit in units:

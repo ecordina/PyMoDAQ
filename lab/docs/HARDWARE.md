@@ -40,7 +40,9 @@ Check that it is seen: `python -c "from pylablib.devices import Thorlabs; print(
   port of the computer (not a hub).
 * If the images stop anyway, the application asks again one integration time after the missed image, closes the camera and
   initializes it again after as many missed ones in a row as set in *Restart after missed* (2 by default), and counts them
-  (*Missed readouts* and *Restarts* in the Status of the unit). The same goes for a spectrometer.
+  (*Missed readouts* and *Restarts* in the Status of the unit). The same goes for a spectrometer. After *Restart attempts*
+  restarts (3 by default) the camera is declared **lost**: it is not read out any more, and the experiment ends if it was the
+  only camera or spectrometer (it goes on while another one is read out).
 
 **On Linux (and macOS), OpenCV must be the headless one.** `pymodaq_plugins_thorlabs` requires `opencv-python`, whose wheel
 ships its own Qt 5 and points Qt to it when it is imported (PyMoDAQ imports it with the plugins, before its window is made):

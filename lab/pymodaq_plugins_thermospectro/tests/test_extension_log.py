@@ -118,6 +118,7 @@ class TestHoldingATemperature:
         run(qtbot, ext)
         qtbot.wait(500)
         unit = ext.unit(1)
+        unit.settings.child('restart_after').setValue(0)  # (never restarted: the time decides)
         unit.detector.command_hardware.disconnect()  # the spectrometer stops answering
 
         wait_for(qtbot, lambda: any('No spectrum from Spectro1' in text for _, text, _ in ext.notifications),

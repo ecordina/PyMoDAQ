@@ -239,12 +239,12 @@ the values, the spectra and the crops of the spectra by the integration time of 
 
 ## Safety
 
-A **ramp** is never left hot by accident: its set-point returns to the initial value on Stop, when its spectrometer or its
-thermal controller does not deliver anything for the time set in *Stop if no data for* (30 s, and at least a few readouts),
-and when a module is closed. A controller **held at a temperature**, or whose **ramps are over** (it was told to stay at the
-top, or at the bottom), is left where it is when the log ends (that is the point of holding it) and is not touched when a
-module goes silent: the log goes on, tells it, and tells it when the data come back (a glitch must not end a log of two
-days). A thermal controller which is closed cannot be brought back: the
+A **ramp** is never left hot by accident: its set-point returns to the initial value on Stop, when its thermal controller
+does not deliver anything for the time set in *Stop if no data for* (30 s, and at least a few readouts), when its
+spectrometer or camera is **lost** (see below) and when a module is closed. A controller **held at a temperature**, or whose
+**ramps are over** (it was told to stay at the top, or at the bottom), is left where it is when the log ends (that is the
+point of holding it) and is not touched when a thermal controller goes silent: the log goes on, tells it, and tells it when
+the data come back (a glitch must not end a log of two days). A thermal controller which is closed cannot be brought back: the
 extension says so, with its last set-point. When the extension is closed during a ramp, a dialog asks whether to set the
 initial temperatures at once (the proposed answer) or to bring them back gradually; when PyMoDAQ itself is quit, they are
 set at once. When no ramp is going on (the controllers are held, or the ramps are over) there is nothing to bring back: the
@@ -257,3 +257,33 @@ initialized again by itself when as many readouts in a row as *Restart after mis
 0: never; it can be changed during an experiment); a readout is asked for one integration time after it is initialized. The
 *Missed readouts* in the Status of the unit count the readouts which gave nothing since the live view or the experiment began, the
 *Restarts* how many times the instrument was initialized again; the status bar tells the missed ones too.
+
+### A spectrometer or a camera which is lost
+
+Each restart is an **attempt**. After *Restart attempts* of them (3 by default, 0: no restart; it can be changed during an
+experiment; the count starts again whenever data come back), another series of missed readouts in a row, or an initialization
+which does not work, **declares the instrument lost**: it is not read out any more, the unit says *LOST* in the status bar, a
+dialog tells it, and what it recorded stays in the file (its groups just stop growing). An instrument which is *closed* from
+outside is lost at once. A thermal controller which fails never ends the experiment.
+
+| Instruments of the application | What is lost | The experiment |
+|---|---|---|
+| a camera (with or without thermal controller) | the camera | **ends** |
+| a spectrometer and its thermal controller | the spectrometer | **ends** |
+| a camera, a spectrometer and a thermal controller | the camera, or the spectrometer | goes on with the other |
+| | the camera and the spectrometer | **ends** |
+| two spectrometers, each with a thermal controller | one spectrometer | goes on with the other |
+| | both | **ends** |
+| any | a thermal controller (closed, or silent) | goes on, the spectra are recorded without its temperature |
+
+Everything which happens to an instrument is **written in the file by the application itself**, as an observation marked
+`[auto]` with its time (the *Notes* group of the file; it is listed in the Saving window with the observations you wrote, and
+`lab_export` puts it in the `_notes.csv`): each restart, the data coming back, the instrument lost and what it changes for the
+experiment, a thermal controller which does not answer or is closed, and the end of the experiment when nothing can be read any
+more. The gap in the recording is explained in the file. Nothing is written when the log is not saved.
+
+When it ends, the ramps are first brought back to their initial temperature (a controller which holds a temperature stays
+where it is) and the file is closed. The ramp of a lost spectrometer or camera is brought back at once, except when another
+unit which is still read out reads the same thermal controller (the camera next to a spectrometer): the ramp goes on, that unit
+records the temperature, and the ramp is brought back when that unit is lost too. With *Restart after missed* at 0 the instrument is
+neither restarted nor given up on because of missed readouts: *Stop if no data for* applies to it as to a thermal controller.

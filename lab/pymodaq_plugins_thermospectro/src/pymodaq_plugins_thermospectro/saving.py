@@ -68,6 +68,7 @@ from pymodaq_plugins_thermospectro.unit_settings import DEFAULT_INTENSITY_UNITS
 logger = set_logger(get_module_name(__file__))
 
 NOTES = 'Notes'  # the group of the observations
+AUTO_NOTE = '[auto]'  # what an observation which the application wrote by itself (an instrument which is lost...) begins with
 NOTE_BYTES = 4000  # the room of an observation in the file, in bytes of UTF-8: 1000 characters of any language (an
 # array of strings of a fixed size can be enlarged once the file is in SWMR mode, one of strings of any size cannot)
 SPECTRUM = 'Spectrum'
@@ -523,6 +524,7 @@ class ThermoSpectroSaver(ExtensionSaver):
         self._detector_modules: list = []
         self._actuator_modules: list = []
         self._seen: set[str] = set()
+        self._released: tuple[str, ...] = ()  # the prefixes of the groups of the lost units: nothing more is expected
         self._notes = None  # the two arrays of the observations (time, text) of the file being written
         self.swmr_started = False
         self.swmr_error = ''  # why SWMR could not be started (the data are saved all the same)
@@ -550,10 +552,18 @@ class ThermoSpectroSaver(ExtensionSaver):
                 if recording.program:
                     self._detector_modules.append(VirtualModule(group_title(number, PROGRAM), recording.settings))
         self._seen = set()
+        self._released = ()
         self._notes = None
         self.swmr_started = False
         self.swmr_error = ''
         self.n_errors = 0
+
+    def release_unit(self, number: int):
+        """A unit is lost: the groups which did not receive their first data never will, SWMR does not wait for them
+
+        (The groups which have their data stay in the file, they just do not grow any more.)
+        """
+        self._released = self._released + (group_title(number, ''),)
 
     @property
     def waiting_for(self) -> list[str]:
@@ -568,8 +578,10 @@ class ThermoSpectroSaver(ExtensionSaver):
 
     @property
     def expected(self) -> set[str]:
-        """The titles of the groups which are saved"""
-        return {module.title for module in self._detector_modules + self._actuator_modules}
+        """The titles of the groups which are saved (the groups of a lost unit only if they have their data)"""
+        released = self._released
+        return {module.title for module in self._detector_modules + self._actuator_modules
+                if module.title in self._seen or not (released and module.title.startswith(released))}
 
     def update_after_h5changed(self):
         self.detectors = {}
@@ -596,8 +608,11 @@ class ThermoSpectroSaver(ExtensionSaver):
         try:
             import h5py
             group = self._h5saver.get_set_group(node, NOTES, title='Observations')
-            self._h5saver.set_attr(group, 'description', 'what the user noted during the experiment: the time (epoch '
-                                                         'seconds) and the text of each observation')
+            self._h5saver.set_attr(group, 'description', 'what was noted during the experiment: the time (epoch seconds) '
+                                                         'and the text of each observation; the ones which begin with '
+                                                         f'{AUTO_NOTE} were written by the application itself (an '
+                                                         'instrument restarted, lost or back, a thermostat which does not '
+                                                         'answer)')
             h5_group = group.node
             self._notes = (
                 h5_group.create_dataset('time', shape=(0,), maxshape=(None,), dtype='float64', chunks=(64,)),

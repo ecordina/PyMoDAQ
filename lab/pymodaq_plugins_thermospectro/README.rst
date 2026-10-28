@@ -155,13 +155,18 @@ temperature, or whose ramps are over, only ends at Stop or when its duration is 
 holds a temperature, Stop (or the end of the duration) brings the ramp back, then ends the log, and the held controller
 stays where it is. **Pause** freezes the set-point of a ramp (the recording goes on).
 
-If a spectrometer, a camera or a thermal controller does not deliver anything for *Stop if no data for* seconds (30 s, and
-at least a few readouts), a ramp is brought back to its initial temperature; a log which **holds** a temperature (or only
-records) **goes on**, tells it once and tells it again when the data come back, so that a transient glitch does not end a
-log of two days. A module which is *closed* cannot be read any more and ends the log of its unit. If a thermal controller
-itself is closed, nothing can bring it back: the extension says so. When the extension is closed during a ramp, it asks
-whether to set the initial temperatures at once (the proposed answer) or to bring them back gradually; when no ramp is going
-on (the controllers are held, or the ramps are over) there is nothing to bring back: it only asks whether to close the log.
+If a **thermal controller** does not deliver anything for *Stop if no data for* seconds (30 s, and at least a few readouts),
+its ramp is brought back to its initial temperature (a log which **holds** a temperature, or only records, tells it once and
+tells it again when the data come back, so that a transient glitch does not end a log of two days). A thermal controller
+which stops answering, or which is closed, **never ends the experiment**: the spectrometers and cameras go on being read and
+recorded, without its temperature. If a thermal controller itself is closed, nothing can bring it back: the extension says so.
+A **spectrometer or a camera** which stops answering is restarted, then given up on (see below): **the experiment goes on while
+at least one of them is still read out, and ends, once the ramps are back at their initial temperature, when all of them are
+lost.** So a camera alone, or a spectrometer with its thermal controller, ends the experiment when it is lost; with a camera and
+a spectrometer (or two spectrometers) it takes both to end it, and a lost thermal controller ends nothing. When the extension is
+closed during a ramp, it asks whether to set the initial temperatures at once (the proposed answer) or to bring them back
+gradually; when no ramp is going on (the controllers are held, or the ramps are over) there is nothing to bring back: it only
+asks whether to close the log.
 
 The **first measurement of an experiment** is taken one integration time after it begins (not at the next readout time), then one
 readout time after each measurement which came back. A **spectrometer or a camera** which stops answering (for a camera, the readout
@@ -169,15 +174,29 @@ times out in the Thorlabs driver) is given up on after ``max(10 s, 2 x integrati
 camera) and **asked again one integration time later**, not at the next readout time (the readouts may then be closer to each other,
 or farther, than the readout time: data are wanted more than a regular rhythm). When as many readouts in a row as set in **Restart
 after missed** (2 by default; 1 restarts at the first missed readout, 0 never restarts) are missed, the instrument is **closed and
-initialized again** by itself and a readout is asked for one integration time after it is (it is tried again after 30 s, 1 min,
-2 min, then every 5 min if it cannot be initialized). After a readout which came back the next one is a readout time later. The Status
-of each unit shows the **Missed readouts** (the readouts which gave nothing since the live view or the experiment began) and the
-**Restarts**, the status bar tells the number of missed readouts, and the log says when the data come back. A gap in the recording is
-also visible in the file: the time of the measurements (its time axis) jumps by more than the readout time.
+initialized again** by itself and a readout is asked for one integration time after it is (an initialization which does not work is
+tried again after 30 s, 1 min, 2 min, then 5 min). After a readout which came back the next one is a readout time later.
+
+Each restart is an **attempt**: after **Restart attempts** of them (3 by default, the count starts again when data come back) the next
+series of missed readouts, or an initialization which does not work, **declares the instrument lost**: it is not read out any more, the
+user is told, the status bar says *LOST* for the unit, and what it recorded stays in the file. Its ramp is brought back to the initial
+temperature, unless another unit of the experiment reads the same thermal controller (the camera next to a spectrometer): the ramp then
+goes on and the temperature goes on being recorded by that unit, until that one is lost too. An instrument which is *closed* from outside
+is lost at once, without restarts. With *Restart after missed* at 0 an instrument is never restarted, nor given up on because of missed
+readouts: *Stop if no data for* applies to it as for a thermal controller (its ramp is brought back; a log which holds a temperature, or
+only records, tells it and goes on).
+
+Everything which happens to an instrument is also **written in the file by the application itself**, as an observation marked ``[auto]``
+with its time (in the Notes group of the file, listed in the Saving window with the observations you wrote, and exported by ``lab_export``
+with them): each restart, the data coming back, the instrument lost and what it changes for the experiment, a thermal controller which
+does not answer or is closed, and the end of the experiment when nothing can be read any more. A gap in the recording is then explained in
+the file (it is also visible in the time of the measurements, which jumps by more than the readout time). The Status of each unit shows the
+**Missed readouts** (the readouts which gave nothing since the live view or the experiment began) and the **Restarts**, the status bar tells
+the number of missed readouts, and the log says when the data come back.
 
 The modes, the ROIs, the recording options, the settings and the file (its folder and its name, the title, the sample, the
 operator and the protocol) cannot be changed during a log; the buttons showing or hiding a ROI or the temperature can be
-used, and so can the observations, the integration time and *Restart after missed*. The controller is only given set-points: protect it with the bounds of its
+used, and so can the observations, the integration time, *Restart after missed* and *Restart attempts*. The controller is only given set-points: protect it with the bounds of its
 actuator (*Set bounds* in the settings of the DAQ_Move), the extension does not know its limits (a Quantum Northwest TC 125
 refuses a temperature it does not accept).
 

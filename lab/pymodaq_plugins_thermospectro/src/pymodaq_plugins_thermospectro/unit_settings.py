@@ -43,6 +43,7 @@ RAMP_FIELDS = ('mode', 'initial', 'take_current', 'final', 'velocity', 'duration
 DEFAULT_INTEGRATION_TIME = 500.0  # ms
 DEFAULT_READOUT_TIME = 1.0  # s
 DEFAULT_RESTART_AFTER = 2  # readouts missed in a row before the detector is closed and initialized again
+DEFAULT_RESTART_ATTEMPTS = 3  # how many times it is closed and initialized again before it is declared lost
 #: What an instrument measures, until the user says otherwise (the plugins do not say: arbitrary units, A.U.; an ADC gives
 #: counts, a power meter W...), and the unit of the integration time
 DEFAULT_INTENSITY_UNITS = 'A.U.'
@@ -187,8 +188,18 @@ def _unit_definition(number: int, rois: Sequence[Roi], enabled: bool, kind: str,
          'min': 0,
          'tip': f'When a readout gives nothing, the {what} is asked again one {"exposure" if cam else "integration"} time '
                 f'later; when this many readouts in a row give nothing, the {what} is closed and initialized again '
-                f'(then asked once more one {"exposure" if cam else "integration"} time after). 1: restart at the first '
-                f'missed readout. 0: never restarted. Can be changed during an experiment'},
+                f'(then asked once more one {"exposure" if cam else "integration"} time after, and this many missed '
+                f'readouts in a row are needed again to restart it again, see "Restart attempts"). 1: restart at the first '
+                f'missed readout. 0: never restarted, and never given up on because of missed readouts (the "Stop if no '
+                f'data for" time of the experiment then applies). Can be changed during an experiment'},
+        {'title': 'Restart attempts:', 'name': 'restart_attempts', 'type': 'int', 'value': DEFAULT_RESTART_ATTEMPTS,
+         'min': 0,
+         'tip': f'How many times the {what} is closed and initialized again while it gives nothing (the count starts '
+                f'again when data come back). When it still gives nothing after the last one (this many missed readouts in '
+                f'a row again, see "Restart after missed"), the {what} is declared lost: it is not read out any more. The '
+                f'experiment goes on while another spectrometer or camera is read, and stops when all of them are lost '
+                f'(a thermostat which fails never stops it). 0: not restarted, lost after the first missed readouts. Can '
+                f'be changed during an experiment'},
         {'title': 'Intensity unit:', 'name': 'intensity_units', 'type': 'str', 'value': DEFAULT_INTENSITY_UNITS,
          'tip': f'The unit of what the {what} measures (the instrument does not say): A.U. (arbitrary units) unless '
                 'you write another one (counts, V...). It is shown in the plots and saved with the data. What is '
@@ -376,6 +387,12 @@ class UnitSettings:
         """How many readouts in a row may be missed before the detector is initialized again (0: never)"""
         leaf = self.param.names.get('restart_after')  # (a tree saved by an older version has none)
         return max(0, int(leaf.value())) if leaf is not None else DEFAULT_RESTART_AFTER
+
+    @property
+    def restart_attempts(self) -> int:
+        """How many times the detector is initialized again while it gives nothing, before it is declared lost"""
+        leaf = self.param.names.get('restart_attempts')  # (a tree saved by an older version has none)
+        return max(0, int(leaf.value())) if leaf is not None else DEFAULT_RESTART_ATTEMPTS
 
     @property
     def record_spectrum(self) -> bool:
@@ -797,8 +814,8 @@ class UnitSettings:
                     continue  # what is plotted can be changed during the experiment
                 if path == ('integration_time',):
                     continue  # so can the integration time: it is saved with each measurement
-                if path == ('restart_after',):
-                    continue  # and when to restart the detector
+                if path in (('restart_after',), ('restart_attempts',)):
+                    continue  # and when to restart the detector, and how many times
                 leaf.setOpts(enabled=not locked)
             for key in self.roi_keys:
                 self.param.child('rois', key).setOpts(removable=not locked)

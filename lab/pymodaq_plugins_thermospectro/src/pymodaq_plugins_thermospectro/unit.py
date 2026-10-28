@@ -61,7 +61,7 @@ class UnitState(str, Enum):
 
 class Problem(str, Enum):
     """What went wrong with a unit (see :attr:`Unit.problem`)"""
-    SPECTROMETER = 'spectrometer'  # it delivers nothing, or it was closed
+    SPECTROMETER = 'spectrometer'  # it is lost: it delivered nothing in spite of the restarts, or it was closed
     THERMOSTAT_SILENT = 'thermostat_silent'  # it does not give its temperature any more
     THERMOSTAT_LOST = 'thermostat_lost'  # it was closed: nothing can bring it back to the initial value
 
@@ -131,14 +131,20 @@ class Unit(QtCore.QObject):
         Emitted for each readout, once the spectrum came back
     notice: Signal(str)
         Something to tell in the status bar
+    journal: Signal(str)
+        What happened to an instrument (restarted, lost, back, a thermostat which does not answer): the extension writes
+        it in the file of the experiment, as an observation marked ``[auto]``, with its time
     problem: Signal(Unit, Problem, str)
-        A module does not work any more. When it is emitted the unit has already done what it can for the
-        thermostat: the ramp is on its way back to the initial value (nothing can be done if the thermostat is lost)
+        A module does not work any more (a spectrometer or camera is lost once it was restarted *Restart attempts* times
+        in vain). When it is emitted the unit has already done what it can for the thermostat: the ramp is on its way back
+        to the initial value, unless another unit still reads the thermostat (the ramp then goes on, see :meth:`fail`) or
+        the thermostat is lost (nothing can be done)
     axis_units_changed: Signal(str)
         The units of the wavelengths of the spectrum are not the same as before (nm, or the axis as it is)
     """
     measurement = QtCore.Signal(object)
     notice = QtCore.Signal(str)
+    journal = QtCore.Signal(str)
     problem = QtCore.Signal(object, object, str)
     axis_units_changed = QtCore.Signal(str)
 
@@ -153,6 +159,7 @@ class Unit(QtCore.QObject):
     #: What the detector of the unit is, in the messages
     WHAT = 'spectrometer'
     DATA = 'spectrum'
+    DATAS = 'spectra'
     DIMENSION = '1D'
     TIME_NAME = 'integration'
 
@@ -185,13 +192,19 @@ class Unit(QtCore.QObject):
         self._requested_integration: Optional[float] = None  # the integration time last asked of the detector (ms)
         self._applied_integration: Optional[float] = None  # the one it was set to (it accepts the closest it can)
         self.last_sent: Optional[float] = None
-        self.failed = False  # the spectrometer is not read out any more
+        self.failed = False  # the spectrometer is lost (it gave nothing in spite of the restarts, or it was closed)
         self.clock = time.perf_counter  # the clock of the ramp (replaced in the tests)
         self.n_measurements = 0
         self.n_skipped = 0  # readouts which were not made because the previous one was not over
         self.n_lost = 0  # readouts whose spectrum never came back
         self.n_lost_in_a_row = 0  # ... without any spectrum coming since the last of them
+        self._series_misses = 0  # ... and without the detector having been initialized again since
         self.n_reinits = 0  # how many times the detector was closed and initialized again
+        self._attempts = 0  # ... since a spectrum came (it is lost when "Restart attempts" of them were not enough)
+        self.thermostat_failed = False  # the thermostat did not answer, or was closed, since the experiment began
+        self.ramp_kept = False  # the detector is lost and the ramp goes on: another unit reads the thermostat (see fail)
+        #: The units of the extension, this one included (the extension sets it): a thermostat can be read by several
+        self.peers = lambda: [self]
         self._reiniting = False  # the detector is being initialized again: nothing is read out
         self._reinit_inited = False  # its initialization said it was done
         self._reinit_failures = 0  # the initializations which did not work, since a spectrum came
@@ -459,6 +472,7 @@ class Unit(QtCore.QObject):
         self.state = UnitState.LIVE
         self.origin = origin
         self.failed = False
+        self.thermostat_failed = self.ramp_kept = False
         self._pending = None
         self.reset_counters()
         self._warnings.clear()
@@ -478,6 +492,17 @@ class Unit(QtCore.QObject):
             self._connect(self.thermostat, self.thermostat.init_signal,
                           lambda ok, m=self.thermostat: self._on_module_init(m, ok))
         self.reset_series()
+        self.update_timing()
+        self._readout()
+
+    def revive(self):
+        """Read a spectrometer which was lost out again (before an experiment: the instrument may be back), with all its
+        attempts"""
+        if self.state != UnitState.LIVE or not self.failed:
+            return
+        self.failed = False
+        self._reported.discard(Problem.SPECTROMETER)
+        self.n_lost_in_a_row = self._series_misses = self._attempts = 0
         self.update_timing()
         self._readout()
 
@@ -508,6 +533,7 @@ class Unit(QtCore.QObject):
         """Stop reading the spectrometer out (it does not answer), the thermostat is left to the ramp"""
         self.failed = True
         self._stop_timers()
+        self._cancel_reinit()
         self._pending = None
 
     # ----------------------------------------------------------------------------------------------------------
@@ -521,7 +547,10 @@ class Unit(QtCore.QObject):
 
     @logged
     def _readout(self):
-        if self.state == UnitState.IDLE or self.failed or self.detector is None or self._reiniting:
+        if self.state == UnitState.IDLE or self.failed or self.detector is None:
+            return
+        self._poll_thermostat()  # (whatever the detector does: it is not the thermostat which is silent)
+        if self._reiniting:
             return
         if self._pending is not None:
             age = time.monotonic() - self._pending[1]
@@ -538,10 +567,13 @@ class Unit(QtCore.QObject):
                 return
         self._sync_integration()
         self._pending = (time.time(), time.monotonic(), self.integration_time_now())
-        if self.thermostat is not None and self.thermostat.initialized_state:
-            self.thermostat.get_actuator_value()
         self.detector.snap()
         self._miss_timer.start(int(self.pending_timeout() * 1000))
+
+    def _poll_thermostat(self):
+        """Ask the thermostat for its temperature (it answers by a signal: :meth:`_on_temperature`)"""
+        if self.thermostat is not None and self.thermostat.initialized_state:
+            self.thermostat.get_actuator_value()
 
     def _integration_ms(self) -> int:
         """The integration time (ms): what is waited for before a readout is asked again"""
@@ -555,7 +587,9 @@ class Unit(QtCore.QObject):
         then closer to each other, or farther, than the readout time: data are wanted more than a regular rhythm). When
         as many readouts as the settings say (*Restart after missed*, 2 by default, 0: never) are missed in a row, the
         detector is closed and initialized again, and the next readout is asked for once the integration time has passed
-        again. After a readout which came back the next one is a readout time later.
+        again. When that many are missed in a row after as many restarts as *Restart attempts* says (3 by default) the
+        detector is lost (:meth:`_declare_lost`). After a readout which came back the next one is a readout time later,
+        and the restarts are counted again from zero.
         """
         pending = self._pending
         if self.state == UnitState.IDLE or self.failed or self._reiniting or pending is None or self.detector is None:
@@ -564,13 +598,17 @@ class Unit(QtCore.QObject):
         self._pending = None
         self.n_lost += 1
         self.n_lost_in_a_row += 1
+        self._series_misses += 1
         self._show_counters()
         logger.warning(f'{self.detector.title}: no {self.DATA} came back from the readout started {age:.1f} s ago '
                        f'({self.n_missed} readouts missed)')
         self._timer.stop()
         restart_after = self.settings.restart_after
-        if restart_after > 0 and self.n_lost_in_a_row >= restart_after:
-            self._start_reinit()
+        if restart_after > 0 and self._series_misses >= restart_after:
+            if self._attempts < self.settings.restart_attempts:
+                self._start_reinit()
+            else:
+                self._declare_lost()
         else:
             self._resume_timer.start(self._integration_ms())
 
@@ -607,6 +645,7 @@ class Unit(QtCore.QObject):
     def reset_counters(self):
         """Count from zero (the live view, or the experiment, begins)"""
         self.n_skipped = self.n_lost = self.n_lost_in_a_row = self.n_reinits = self._reinit_failures = 0
+        self._series_misses = self._attempts = 0
         if self._down_since is not None:  # (the detector is being initialized again: that is counted from now on)
             self._down_since = time.monotonic()
         self._show_counters()
@@ -635,23 +674,27 @@ class Unit(QtCore.QObject):
     def _start_reinit(self):
         """Close the detector and initialize it again (a camera which stopped sending images: the plugin only gives up
         on the readout, the camera stays as it is). The readouts start again once it is initialized, or after one of the
-        next attempts if it cannot be."""
+        next attempts if it cannot be (*Restart attempts* of them, then the detector is lost)."""
         detector = self.detector
-        if detector is None or self.state == UnitState.IDLE:
+        if detector is None or self.state == UnitState.IDLE or self.failed:
             self._cancel_reinit()
             return
         self._reiniting = True
         self._reinit_inited = False
         self.n_reinits += 1
+        self._attempts += 1
+        self._series_misses = 0
         if self._down_since is None:
             self._down_since = time.monotonic()
         self._stop_timers()
+        self.update_timing()  # (the thermostat goes on being asked for its temperature)
         self._pending = None
         self._show_counters()
         message = (f'{detector.title}: {self.n_lost_in_a_row} readouts lost in a row, it is closed and initialized '
-                   f'again (restart {self.n_reinits})')
+                   f'again (restart {self._attempts} of {self.settings.restart_attempts} before it is given up)')
         logger.warning(message)
         self.notice.emit(message)
+        self.journal.emit(message)
         try:
             if detector.grab_state:
                 detector.stop_grab()
@@ -690,11 +733,16 @@ class Unit(QtCore.QObject):
             return
         self._reinit_poll_timer.stop()
         self._reinit_failures += 1
+        if self._attempts >= self.settings.restart_attempts:
+            self._declare_lost(f'{detector.title} could not be initialized again within {self.REINIT_TIMEOUT:g} s, '
+                               f'after {self._attempts} attempts: it is lost, it is not read out any more')
+            return
         wait = self.REINIT_WAITS[min(self._reinit_failures, len(self.REINIT_WAITS)) - 1]
         message = (f'{detector.title} could not be initialized again within {self.REINIT_TIMEOUT:g} s '
-                   f'(attempt {self._reinit_failures}), trying again in {wait:g} s')
+                   f'(attempt {self._attempts} of {self.settings.restart_attempts}), trying again in {wait:g} s')
         logger.error(message)
         self.notice.emit(message)
+        self.journal.emit(message)
         self._reinit_retry_timer.start(int(wait * 1000))
 
     @logged
@@ -702,11 +750,16 @@ class Unit(QtCore.QObject):
         if not self._store_data(dte):
             return
         if self.detector is not None:
-            self.recovered(Problem.SPECTROMETER, f'{self.detector.title} delivers data again')
+            told = self.recovered(Problem.SPECTROMETER, f'{self.detector.title} delivers data again')
             if self.n_lost_in_a_row:
-                logger.info(f'{self.detector.title} delivers {self.DATA}s again after {self.n_lost_in_a_row} readouts '
+                logger.info(f'{self.detector.title} delivers {self.DATAS} again after {self.n_lost_in_a_row} readouts '
                             f'lost in a row ({self.n_missed} missed, {self.n_reinits} restarts)')
-        self.n_lost_in_a_row = 0
+                if not told:  # (the gap in the recording is explained in the file)
+                    misses, restarts = self.n_lost_in_a_row, self._attempts
+                    self.journal.emit(f'{self.detector.title} delivers {self.DATAS} again after {misses} readout'
+                                    f'{"s" if misses != 1 else ""} missed in a row'
+                                    + (f' and {restarts} restart{"s" if restarts != 1 else ""}' if restarts else ''))
+        self.n_lost_in_a_row = self._series_misses = self._attempts = 0
         self._reinit_failures = 0
         pending, self._pending = self._pending, None
         if pending is not None:
@@ -885,10 +938,8 @@ class Unit(QtCore.QObject):
         self._last_phase = None
         self.program = None
         self._reported.clear()
-        if self.failed:  # (a module which did not answer during the live view: the experiment tries it again)
-            self.failed = False
-            self.update_timing()
-            self._readout()
+        self.thermostat_failed = self.ramp_kept = False
+        self.revive()  # (a module which did not answer during the live view: the experiment tries it again)
         # (a readout in progress is not dropped: there is never more than one: its spectrum is displayed, but it is
         # not part of the experiment, see _on_spectrum)
         self._started_at = self._run_started = time.monotonic()
@@ -1039,13 +1090,20 @@ class Unit(QtCore.QObject):
         """A module does not work: do what can be done for the thermostat, and say it (once per kind)
 
         A spectrometer (camera) which does not answer is not read out any more, unless `halt` is False: a log which
-        holds a temperature goes on asking, and takes the data again when they come back (see :meth:`recovered`).
+        holds a temperature goes on asking, and takes the data again when they come back (see :meth:`recovered`). Its
+        ramp is brought back to the initial value, unless another unit which is read out reads the same thermostat: the
+        temperature is still recorded, the experiment goes on with the ramp (see :meth:`release_orphan_program`).
+
+        A thermostat which does not answer ends the ramp of the unit, not the log: the unit goes on recording its
+        spectra (:attr:`thermostat_failed`).
         """
         kind = Problem(kind)
         if kind in self._reported:
             return
         self._reported.add(kind)
         logger.error(f'{self.label}: {message}')
+        if kind != Problem.SPECTROMETER:
+            self.thermostat_failed = True
         if kind == Problem.THERMOSTAT_LOST:
             self._disconnect(self.thermostat)
             self.after_program = None
@@ -1056,16 +1114,63 @@ class Unit(QtCore.QObject):
         else:
             if kind == Problem.SPECTROMETER and halt:
                 self.halt_readouts()
+            shared = kind == Problem.SPECTROMETER and halt and self.thermostat_read_by_others()
             if self.runner is not None and self.runner.mode == 'cycling':
-                self.stop_program(self.clock(), reason=message)  # first the safety action, whatever happens to the message
+                if shared:  # (the ramp is not the detector's alone: the temperature goes on being recorded)
+                    self.ramp_kept = True
+                    logger.info(f'{self.label}: its ramp goes on, {self.thermostat.title} is read by another unit')
+                else:
+                    self.stop_program(self.clock(), reason=message)  # first the safety action, whatever the message
         self.problem.emit(self, kind, message)
 
+    def thermostat_read_by_others(self) -> bool:
+        """The thermostat of the unit is read by another unit of the experiment which is read out (the camera next to a
+        spectrometer reads the temperature of its thermal controller): what it measures goes on being recorded"""
+        thermostat = self.thermostat
+        return thermostat is not None and any(
+            other is not self and other.thermostat is thermostat and other.state == UnitState.RUNNING
+            and not other.failed for other in self.peers())
+
+    def release_orphan_program(self, now: float):
+        """A ramp which goes on although its detector is lost (see :meth:`fail`) is brought back when no unit reads the
+        thermostat any more: nothing records what it does"""
+        if self.failed and self.ramp_kept and not self.thermostat_read_by_others():
+            self.ramp_kept = False
+            reason = f'{self.title} is lost and no other unit reads the temperature any more'
+            self.stop_program(now, reason=reason)
+            self.journal.emit(f'{self.label}: {reason}: the set-point is brought back to the initial temperature')
+
+    def _declare_lost(self, why: str = ''):
+        """The detector gives nothing in spite of the restarts: it is lost, it is not read out any more
+
+        What is done for the thermostat and what is told are those of :meth:`fail` (the extension decides whether the
+        experiment goes on: it does while another spectrometer or camera is read out).
+        """
+        detector = self.detector
+        if detector is None or self.failed:
+            return
+        if not why:
+            restarts, misses = self._attempts, self._series_misses
+            tried = (f'after {restarts} restart{"s" if restarts != 1 else ""}' if restarts
+                     else 'and it is not restarted (Restart attempts: 0)')
+            why = (f'{detector.title} gives no {self.DATA} ({misses} readout{"s" if misses != 1 else ""} missed in a row '
+                   f'{tried}): it is lost, it is not read out any more')
+        self._reported.discard(Problem.SPECTROMETER)  # (the watchdog may have said it already: it is lost now)
+        self.fail(Problem.SPECTROMETER, why)
+
     def silent_for(self, now: float, limit: float) -> Optional[tuple[Problem, str]]:
-        """A module of a running experiment which delivered nothing for `limit` seconds: (kind, message), else None"""
-        if limit <= 0 or self.state != UnitState.RUNNING or self.failed:
+        """A module of a running experiment which delivered nothing for `limit` seconds: (kind, message), else None
+
+        A spectrometer (camera) which is restarted when it misses readouts (*Restart after missed*) is not watched by
+        the time: it is lost after the restarts (see :meth:`_on_miss`). A lost one is not watched either, but its ramp
+        is if it goes on (another unit reads the thermostat).
+        """
+        if limit <= 0 or self.state != UnitState.RUNNING:
             return None
         if self.ramping and self.runner.mode != 'cycling':
             return None  # on its way back, or over: the thermostat is already being sent to the initial value
+        if self.failed and not self.ramping:
+            return None  # nothing is read out, no ramp goes on
         if self.thermostat is not None and Problem.THERMOSTAT_SILENT not in self._reported:
             last = self.temperature.time if self.temperature is not None else self._started_at
             if now - last > limit:
@@ -1076,18 +1181,28 @@ class Unit(QtCore.QObject):
                 return (Problem.THERMOSTAT_SILENT,
                         f'No temperature from {self.thermostat.title} for {limit:g} s: the set-point is brought '
                         'back to the initial value, but the thermostat does not answer: nothing says that it gets it')
-        if Problem.SPECTROMETER not in self._reported and self.detector is not None:
+        if not self.failed and Problem.SPECTROMETER not in self._reported and self.detector is not None \
+                and self.settings.restart_after <= 0:
             last = self.spectrum.time if self.spectrum is not None else self._started_at
             if now - last > limit:
                 return Problem.SPECTROMETER, f'No {self.DATA} from {self.detector.title} for {limit:g} s'
         return None
 
-    def recovered(self, kind: Problem, message: str):
-        """A module which was said not to answer delivers again: say so, the problem can be told again later"""
+    def recovered(self, kind: Problem, message: str) -> bool:
+        """A module which was said not to answer delivers again: say so, the problem can be told again later
+
+        Returns
+        -------
+        bool
+            True if it was said (the module had been reported)
+        """
         if kind in self._reported and not (kind == Problem.SPECTROMETER and self.failed):
             self._reported.discard(kind)
             logger.info(f'{self.label}: {message}')
             self.notice.emit(f'{self.label}: {message}')
+            self.journal.emit(f'{self.label}: {message}')
+            return True
+        return False
 
     def live_notices(self, now: float) -> list[str]:
         """Tell once, after a few seconds, that a module of the live view delivers nothing usable"""
@@ -1111,6 +1226,8 @@ class Unit(QtCore.QObject):
     def status_text(self) -> str:
         """A line for the status bar"""
         text = self.label
+        if self.failed:
+            text += f': {self.title} LOST, not read out any more'
         if self.settled:
             text += f': ramps over, held at {self.hold_target:.4g} {self.units}'
         elif self.hold_target is not None:
@@ -1121,7 +1238,7 @@ class Unit(QtCore.QObject):
             text += f': cycle {state.cycle}/{total} {state.phase.value}'
             text += ' (paused)' if state.paused else f' ({format_duration(state.remaining)} left)'
             text += f', set-point {state.setpoint:.4g} {self.units}'
-        if self.temperature is not None:
+        if self.temperature is not None and (not self.failed or not math.isnan(self.current_temperature())):
             text += f', measured {self.temperature.value:.4g} {self.units}'
         if self.n_missed:
             text += f', {self.n_missed} readouts missed'
@@ -1148,6 +1265,7 @@ class CameraUnit(Unit):
     PENDING_MIN = 30.0  # (the plugin of a camera gives up on its own when a frame does not come in 20 s)
     WHAT = 'camera'
     DATA = 'image'
+    DATAS = 'images'
     DIMENSION = '2D'
     TIME_NAME = 'exposure'
 

@@ -688,3 +688,48 @@ class TestWhenSwmrCannotBeStarted:
             experiment.saver.add_data_bundle(DataBundle(dte=dte))
         assert experiment.saver.waiting_for == [] and experiment.saver.swmr_started
         experiment.finish()
+
+    def test_the_groups_of_a_lost_unit_which_never_had_data_do_not_hold_swmr_up(self, h5saver, qapp):
+        first, second = make_unit(1), make_unit(2)
+        experiment = Experiment(h5saver, [first, second])
+        for dte in build_dtes(experiment.recordings[0], make_measurement(first, 0)):
+            experiment.saver.add_data_bundle(DataBundle(dte=dte))
+        assert not experiment.saver.swmr_started
+        assert experiment.saver.waiting_for and all(title.startswith('Unit2_') for title in experiment.saver.waiting_for)
+
+        experiment.saver.release_unit(2)  # (its spectrometer is lost: it will never send anything)
+
+        assert experiment.saver.waiting_for == []
+        experiment.saver.add_data_bundle(DataBundle(dte=build_dtes(experiment.recordings[0],
+                                                                    make_measurement(first, 1))[0]))
+        assert experiment.saver.swmr_started
+        experiment.finish()
+
+    def test_the_groups_of_a_unit_which_had_data_stay_in_the_file_when_it_is_lost(self, h5saver, qapp):
+        first, second = make_unit(1), make_unit(2)
+        experiment = Experiment(h5saver, [first, second])
+        for unit, recording in zip((first, second), experiment.recordings):
+            for dte in build_dtes(recording, make_measurement(unit, 0)):
+                experiment.saver.add_data_bundle(DataBundle(dte=dte))
+        assert experiment.saver.swmr_started
+
+        experiment.saver.release_unit(2)
+        for dte in build_dtes(experiment.recordings[0], make_measurement(first, 1)):
+            experiment.saver.add_data_bundle(DataBundle(dte=dte))
+        experiment.finish()
+
+        with h5py.File(experiment.path, 'r') as f:
+            groups = titles(f['RawData/Datalogger000'])
+            assert groups['Unit2_ROIs']['Data0D/CH00/EnlData00'].shape[0] == 1  # (what it recorded is kept)
+            assert groups['Unit1_ROIs']['Data0D/CH00/EnlData00'].shape[0] == 2
+
+    def test_a_new_experiment_expects_the_units_again(self, h5saver, qapp):
+        first, second = make_unit(1), make_unit(2)
+        experiment = Experiment(h5saver, [first, second])
+        experiment.saver.release_unit(2)
+        assert all(title.startswith('Unit1_') for title in experiment.saver.expected)
+
+        experiment.saver.configure(experiment.recordings)
+
+        assert any(title.startswith('Unit2_') for title in experiment.saver.expected)
+        experiment.finish()

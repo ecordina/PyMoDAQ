@@ -2159,6 +2159,7 @@ class TestFailures:
         ext.settings['experiment', 'watchdog'] = 1.0
         for unit in ext.units[:2]:
             unit.settings.child('readout_time').setValue(0.1)
+            unit.settings.child('restart_after').setValue(0)  # (never restarted: the time decides, see test_lost_instruments)
         run(qtbot, ext, **SLOW)
         wait_for(qtbot, lambda: ext.unit(2).ramp_state.setpoint > 0.5)
         detector = ext.unit(1).detector
@@ -2529,10 +2530,12 @@ class TestWhatTheDesignMustSurvive:
         unit.pending_timeout = lambda: 0.5
         run(qtbot, ext, **SLOW)
         detector = unit.detector
-        unit._disconnect(detector)  # the spectra come back to nobody: as if the answers were lost
+        # the spectra come back to nobody: as if the answers were lost (not the initialization signal too: the unit
+        # closes and initializes the detector again after two missed readouts, and has to hear that it is done)
+        detector.grab_done_signal.disconnect(unit._on_spectrum)
 
         wait_for(qtbot, lambda: unit.n_lost >= 2, timeout=15000)
-        unit._connect(detector, detector.grab_done_signal, unit._on_spectrum)
+        detector.grab_done_signal.connect(unit._on_spectrum)
         n = unit.n_measurements
 
         wait_for(qtbot, lambda: unit.n_measurements >= n + 3, timeout=15000)  # it is read out again

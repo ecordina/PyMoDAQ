@@ -24,6 +24,26 @@ class TestDefaults:
         assert settings.integration_time == 500.
         assert settings.readout_time == 1.0
 
+    def test_an_instrument_is_restarted_twice_after_two_missed_readouts_and_lost_after_three_restarts(self, settings):
+        assert settings.restart_after == 2
+        assert settings.restart_attempts == 3
+
+    def test_a_tree_saved_by_an_older_version_has_the_defaults(self, settings):
+        settings.param.removeChild(settings.child('restart_after'))
+        settings.param.removeChild(settings.child('restart_attempts'))
+
+        assert settings.restart_after == 2 and settings.restart_attempts == 3
+
+    def test_the_number_of_attempts_is_what_the_user_sets_and_never_negative(self, settings):
+        leaf = settings.child('restart_attempts')
+
+        leaf.setValue(0)
+        assert settings.restart_attempts == 0
+        leaf.setValue(7)
+        assert settings.restart_attempts == 7
+        leaf.setValue(-3)
+        assert settings.restart_attempts == 0
+
     def test_what_is_recorded_by_default(self, settings):
         assert settings.record_spectrum
         assert settings.record_temperature
