@@ -26,6 +26,7 @@ class FakeDetector(QtCore.QObject):
         self.delay = delay
         self.snaps = 0
         self.stopped_grabs = 0
+        self.stops = 0  # the acquisition was stopped (disarmed)
         self.silent = False  # does not answer
         self.restart_fixes = False  # a new initialization makes it answer again (a camera which had stopped)
         self.init_delay = 20  # ms an initialization takes
@@ -65,6 +66,9 @@ class FakeDetector(QtCore.QObject):
             axes = []
         dwa = DataRaw('spectrum', data=[self.spectrum()], axes=axes, labels=['intensity'])
         self.grab_done_signal.emit(DataToExport(self.title, data=[dwa]))
+
+    def stop(self):
+        self.stops += 1
 
     def stop_grab(self):
         self.stopped_grabs += 1

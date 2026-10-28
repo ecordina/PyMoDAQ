@@ -44,6 +44,9 @@ DEFAULT_INTEGRATION_TIME = 500.0  # ms
 DEFAULT_READOUT_TIME = 1.0  # s
 DEFAULT_RESTART_AFTER = 2  # readouts missed in a row before the detector is closed and initialized again
 DEFAULT_RESTART_ATTEMPTS = 3  # how many times it is closed and initialized again before it is declared lost
+#: A detector which is disarmed between the readouts is idle for less than this (s) when the readout time is not much
+#: longer than the integration time: arming it again for every readout is then not advised
+DISARM_MIN_GAP = 5.0
 #: What an instrument measures, until the user says otherwise (the plugins do not say: arbitrary units, A.U.; an ADC gives
 #: counts, a power meter W...), and the unit of the integration time
 DEFAULT_INTENSITY_UNITS = 'A.U.'
@@ -200,6 +203,13 @@ def _unit_definition(number: int, rois: Sequence[Roi], enabled: bool, kind: str,
                 f'experiment goes on while another spectrometer or camera is read, and stops when all of them are lost '
                 f'(a thermostat which fails never stops it). 0: not restarted, lost after the first missed readouts. Can '
                 f'be changed during an experiment'},
+        {'title': 'Disarm between readouts:', 'name': 'disarm', 'type': 'bool', 'value': False,
+         'tip': f'Stop the acquisition of the {what} once a readout has come back, and arm it again for the next one: it '
+                f'is not left running (a camera free-running, a spectrometer measuring) in the meantime. The readouts '
+                f'are still asked once per readout time, with the {"exposure" if cam else "integration"} time set here: '
+                f'the {what} is woken up by each of them. Not advised when the readout time is less than '
+                f'{DISARM_MIN_GAP:g} s longer than the {"exposure" if cam else "integration"} time. Can be changed during '
+                f'an experiment'},
         {'title': 'Intensity unit:', 'name': 'intensity_units', 'type': 'str', 'value': DEFAULT_INTENSITY_UNITS,
          'tip': f'The unit of what the {what} measures (the instrument does not say): A.U. (arbitrary units) unless '
                 'you write another one (counts, V...). It is shown in the plots and saved with the data. What is '
@@ -387,6 +397,12 @@ class UnitSettings:
         """How many readouts in a row may be missed before the detector is initialized again (0: never)"""
         leaf = self.param.names.get('restart_after')  # (a tree saved by an older version has none)
         return max(0, int(leaf.value())) if leaf is not None else DEFAULT_RESTART_AFTER
+
+    @property
+    def disarm(self) -> bool:
+        """The detector is stopped between the readouts (and armed again by the next one)"""
+        leaf = self.param.names.get('disarm')  # (a tree saved by an older version has none)
+        return bool(leaf.value()) if leaf is not None else False
 
     @property
     def restart_attempts(self) -> int:
@@ -763,7 +779,7 @@ class UnitSettings:
         -------
         (kind, key) or None
             None if the parameter is not one of this unit, or the program is changing it itself. The kinds are
-            ``enabled``, ``modules``, ``integration``, ``readout``, ``units`` (key: the intensity unit or the division by
+            ``enabled``, ``modules``, ``integration``, ``readout``, ``disarm``, ``units`` (key: the intensity unit or the division by
             the integration time), ``record``, ``plot_temperature``, ``ramp`` (key: the name of the field) and, for the ROIs (key: the name of the ROI) ``roi_edges``, ``roi_name``, ``roi_record``,
             ``roi_plot``, ``roi_aggregation``, ``roi_channels``
         """
@@ -790,6 +806,8 @@ class UnitSettings:
             return 'units', head
         if head == 'readout_time':
             return 'readout', None
+        if head == 'disarm':
+            return 'disarm', None
         if head == 'record':
             return 'record', path[-1]
         if head == 'ramp' and len(path) == 2:
@@ -814,8 +832,8 @@ class UnitSettings:
                     continue  # what is plotted can be changed during the experiment
                 if path == ('integration_time',):
                     continue  # so can the integration time: it is saved with each measurement
-                if path in (('restart_after',), ('restart_attempts',)):
-                    continue  # and when to restart the detector, and how many times
+                if path in (('restart_after',), ('restart_attempts',), ('disarm',)):
+                    continue  # and when to restart the detector, and how many times, and whether it is disarmed
                 leaf.setOpts(enabled=not locked)
             for key in self.roi_keys:
                 self.param.child('rois', key).setOpts(removable=not locked)

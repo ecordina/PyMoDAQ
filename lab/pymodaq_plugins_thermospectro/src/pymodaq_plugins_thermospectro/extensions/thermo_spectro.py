@@ -410,6 +410,8 @@ class ThermoSpectro(CustomExt):
                 self._rois_changed(unit, reset=True)
         elif kind == 'readout':
             unit.update_timing()
+        elif kind == 'disarm':
+            unit.disarm_changed()
         elif kind == 'plot_temperature':
             view.update_definitions()
         elif kind == 'ramp':

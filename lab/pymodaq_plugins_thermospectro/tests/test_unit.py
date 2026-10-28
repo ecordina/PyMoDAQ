@@ -1301,3 +1301,115 @@ class TestOddities:
 
         assert not bench.unit.ready
         assert bench.unit.missing() == ['Thermo1']
+
+
+class TestDisarm:
+    """The detector can be stopped between the readouts: each readout arms it again"""
+
+    def test_the_detector_is_left_as_it_is_by_default(self, qtbot):
+        bench = Bench(qtbot)
+        assert not bench.settings.disarm
+
+        bench.unit.start_live(time.time())
+        bench.wait_for(3)
+        bench.unit._release()
+
+        assert bench.detector.stops == 0
+
+    def test_the_detector_is_stopped_after_each_readout_which_came_back_and_the_readouts_keep_their_rhythm(self, qtbot):
+        bench = Bench(qtbot)
+        bench.settings.child('disarm').setValue(True)
+
+        bench.unit.start_live(time.time())
+        bench.wait_for(4)
+        bench.unit._release()
+
+        assert bench.detector.stops >= 4
+        assert bench.detector.snaps >= bench.detector.stops  # (it is armed again by a snap, never by anything else)
+        assert bench.detector.max_in_flight == 1
+        times = [m.t for m in bench.measurements[:4]]
+        assert all(0.05 < later - earlier < 0.25 for earlier, later in zip(times, times[1:]))  # (the readout time is 0.1 s)
+
+    def test_the_detector_is_stopped_after_a_missed_readout_so_that_the_next_one_arms_it_again(self, qtbot):
+        bench = TestOneReadoutAtATime.lost_bench(qtbot, restart_after=0, fixes=False)
+        bench.settings.child('disarm').setValue(True)
+
+        bench.unit.start_live(time.time())
+        qtbot.waitUntil(lambda: bench.unit.n_lost >= 2, timeout=20000)
+        bench.unit._release()
+
+        assert bench.detector.stops >= 2
+
+    def test_it_can_be_changed_during_an_experiment(self, qtbot):
+        bench = Bench(qtbot)
+
+        bench.settings.lock(True)
+
+        assert bench.settings.child('disarm').opts['enabled']
+
+    def test_a_tree_saved_by_an_older_version_does_not_disarm(self, qtbot):
+        bench = Bench(qtbot)
+        bench.settings.param.removeChild(bench.settings.child('disarm'))
+
+        assert not bench.settings.disarm
+
+    def test_there_is_a_warning_when_the_detector_would_be_armed_again_within_five_seconds(self, qtbot):
+        bench = Bench(qtbot)
+        bench.settings.child('integration_time').setValue(500.)
+        bench.settings.child('readout_time').setValue(5.4)  # (4.9 s left)
+        bench.settings.child('disarm').setValue(True)
+
+        bench.unit.start_live(time.time())
+        bench.unit._release()
+
+        warnings = [notice for notice in bench.notices if 'not advised' in notice]
+        assert len(warnings) == 1 and '4.9 s' in warnings[0] and 'Spectrometer 1' in warnings[0]
+
+    def test_there_is_no_warning_when_the_detector_is_idle_for_at_least_five_seconds(self, qtbot):
+        bench = Bench(qtbot)
+        bench.settings.child('integration_time').setValue(500.)
+        bench.settings.child('readout_time').setValue(5.5)
+        bench.settings.child('disarm').setValue(True)
+
+        bench.unit.start_live(time.time())
+        bench.unit._release()
+
+        assert not [notice for notice in bench.notices if 'not advised' in notice]
+
+    def test_there_is_no_warning_when_the_detector_is_not_disarmed(self, qtbot):
+        bench = Bench(qtbot)  # (a readout time of 0.1 s)
+
+        bench.unit.start_live(time.time())
+        bench.unit._release()
+
+        assert not [notice for notice in bench.notices if 'not advised' in notice]
+
+    def test_the_warning_is_given_again_when_the_times_change_but_not_when_they_do_not(self, qtbot):
+        bench = Bench(qtbot)
+        bench.unit.start_live(time.time())
+        try:
+            bench.settings.child('disarm').setValue(True)
+            bench.unit.disarm_changed()
+            bench.unit.update_timing()
+            bench.unit.check_disarm()
+            assert len([notice for notice in bench.notices if 'not advised' in notice]) == 1
+
+            bench.settings.child('readout_time').setValue(0.2)
+            bench.unit.update_timing()
+            assert len([notice for notice in bench.notices if 'not advised' in notice]) == 2
+
+            bench.settings.child('readout_time').setValue(20.)  # (enough time: nothing more is said)
+            bench.unit.update_timing()
+            assert len([notice for notice in bench.notices if 'not advised' in notice]) == 2
+        finally:
+            bench.unit._release()
+
+    def test_the_averages_of_the_module_count_in_the_time_the_detector_is_busy(self, qtbot):
+        bench = Bench(qtbot)
+        bench.settings.child('integration_time').setValue(1000.)
+        bench.settings.child('readout_time').setValue(8.)
+        bench.unit.n_averages = lambda: 4  # (4 s of integration: 4 s left)
+
+        assert bench.unit.disarm_gap() == pytest.approx(4.)
+        bench.settings.child('disarm').setValue(True)
+        assert 'not advised' in bench.unit.disarm_warning()

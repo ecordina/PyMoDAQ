@@ -43,7 +43,11 @@ Check that it is seen: `python -c "from pylablib.devices import Thorlabs; print(
   (*Missed readouts* and *Restarts* in the Status of the unit). The same goes for a spectrometer. After *Restart attempts*
   restarts (3 by default) the camera is declared **lost**: it is not read out any more, and the experiment ends if it was the
   only camera or spectrometer (it goes on while another one is read out).
-
+* *Disarm between readouts* (in the settings of the unit, off by default) stops the acquisition of the camera or the
+  spectrometer once a readout has come back, and the next readout arms it again, instead of leaving it free-running
+  between two readouts. The readout times and the exposure (integration) time stay as set; use it when the readouts are
+  far apart (a warning says that it is not advised when there are less than 5 s between the end of a readout and the
+  next one).
 **On Linux (and macOS), OpenCV must be the headless one.** `pymodaq_plugins_thorlabs` requires `opencv-python`, whose wheel
 ships its own Qt 5 and points Qt to it when it is imported (PyMoDAQ imports it with the plugins, before its window is made):
 PyMoDAQ and every command of the lab then stop at *Could not load the Qt platform plugin "xcb" in ".../cv2/qt/plugins" even

@@ -258,6 +258,11 @@ initialized again by itself when as many readouts in a row as *Restart after mis
 *Missed readouts* in the Status of the unit count the readouts which gave nothing since the live view or the experiment began, the
 *Restarts* how many times the instrument was initialized again; the status bar tells the missed ones too.
 
+**Disarm between readouts** stops the acquisition of the camera or the spectrometer once a readout came back, and each
+readout arms it again (the readouts are still asked once per readout time, with the exposure or integration time of the
+unit). It can be changed during an experiment. It is not advised when the readout time is less than 5 s longer than the
+exposure (integration) time times the averages: a warning is given then.
+
 ### A spectrometer or a camera which is lost
 
 Each restart is an **attempt**. After *Restart attempts* of them (3 by default, 0: no restart; it can be changed during an

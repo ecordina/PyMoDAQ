@@ -37,7 +37,7 @@ from pymodaq_plugins_thermospectro.ramp import (END_AT_FINAL, Phase, RampProgram
 from pymodaq_plugins_thermospectro.rois import Roi
 from pymodaq_plugins_thermospectro.spectrometers import (Reading, Spectrum, extract_spectrum, set_integration_time,
                                                          wavelength_axis)
-from pymodaq_plugins_thermospectro.unit_settings import NONE, UnitSettings
+from pymodaq_plugins_thermospectro.unit_settings import DISARM_MIN_GAP, NONE, UnitSettings
 
 logger = set_logger(get_module_name(__file__))
 
@@ -234,6 +234,7 @@ class Unit(QtCore.QObject):
         self._connections: list[tuple] = []  # (module, signal, slot)
         self._warnings: set[str] = set()
         self._silent: set[str] = set()
+        self._disarm_warned: Optional[str] = None  # the warning about the idle time last given
         self._reported: set[Problem] = set()
 
         self._timer = QtCore.QTimer(self)
@@ -408,6 +409,7 @@ class Unit(QtCore.QObject):
         """
         if self.state == UnitState.LIVE:
             self.apply_integration_time()
+        self.check_disarm()
 
     def _sync_integration(self):
         """Before a readout: set on the instrument the integration time the settings ask for, if it changed
@@ -478,8 +480,10 @@ class Unit(QtCore.QObject):
         self._warnings.clear()
         self._silent.clear()
         self._reported.clear()
+        self._disarm_warned = None
         self._started_at = time.monotonic()
         self.apply_integration_time()
+        self.check_disarm()
         if self.detector.grab_state:  # the readouts are driven from here
             self.notice.emit(f'{self.detector.title} was grabbing: it is read out once per readout time instead')
             self.detector.stop_grab()
@@ -510,6 +514,49 @@ class Unit(QtCore.QObject):
         """The readout time was changed"""
         if self.state != UnitState.IDLE and not self.failed:
             self._timer.start(int(round(self.settings.readout_time * 1000)))
+        self.check_disarm()
+
+    # ----------------------------------------------------------------------------------------------------------
+    # disarming the detector between the readouts
+    # ----------------------------------------------------------------------------------------------------------
+    def disarm_gap(self) -> float:
+        """How long (s) the detector is left disarmed between a readout which came back and the next one: the readout
+        time less what a readout takes"""
+        return self.settings.readout_time - self.acquisition_time()
+
+    def disarm_warning(self) -> Optional[str]:
+        """What is said when the detector is disarmed between readouts which are too close to each other"""
+        if not self.settings.disarm or self.disarm_gap() >= DISARM_MIN_GAP:
+            return None
+        return (f'{self.label}: it is not advised to disarm it between the readouts when they are so close: the '
+                f'{self.TIME_NAME} time ({self.acquisition_time():g} s) and the readout time ({self.settings.readout_time:g} s) '
+                f'leave only {max(0., self.disarm_gap()):.1f} s (less than {DISARM_MIN_GAP:g} s) before it has to be armed '
+                f'again')
+
+    def check_disarm(self):
+        """Warn (once) when the settings make the detector be disarmed, and armed again, within a few seconds"""
+        message = self.disarm_warning()
+        if message is None:
+            self._disarm_warned = None
+        elif message != self._disarm_warned and self.state != UnitState.IDLE:
+            self._disarm_warned = message
+            logger.warning(message)
+            self.notice.emit(message)
+
+    def disarm_changed(self):
+        """The option to disarm the detector between the readouts was ticked, or unticked"""
+        self._disarm_warned = None
+        self.check_disarm()
+
+    def _disarm(self):
+        """Stop the acquisition of the detector, if the settings say so: the next readout arms it again (the plugins
+        arm their instrument when a readout is asked for, and the readouts are still made once per readout time)"""
+        if not self.settings.disarm or self.detector is None or self.state == UnitState.IDLE:
+            return
+        try:
+            self.detector.stop()
+        except Exception:
+            logger.exception(f'{self.detector.title} could not be disarmed')
 
     def stop_live(self):
         if self.state == UnitState.IDLE:
@@ -610,6 +657,7 @@ class Unit(QtCore.QObject):
             else:
                 self._declare_lost()
         else:
+            self._disarm()  # (the next readout arms it again: a stalled acquisition may not stall the next one)
             self._resume_timer.start(self._integration_ms())
 
     @logged
@@ -764,6 +812,7 @@ class Unit(QtCore.QObject):
         pending, self._pending = self._pending, None
         if pending is not None:
             self._miss_timer.stop()
+            self._disarm()
         if pending is None or self.state == UnitState.IDLE:
             return  # a spectrum nobody asked for (the module was grabbing on its own): shown, not measured
         if self.state == UnitState.RUNNING and pending[1] < self._run_started:

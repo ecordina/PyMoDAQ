@@ -194,9 +194,19 @@ the file (it is also visible in the time of the measurements, which jumps by mor
 **Missed readouts** (the readouts which gave nothing since the live view or the experiment began) and the **Restarts**, the status bar tells
 the number of missed readouts, and the log says when the data come back.
 
+**Disarm between readouts** (off by default, for a camera or a spectrometer): once a readout has come back the acquisition
+of the instrument is stopped (a camera which would free-run, a spectrometer which would go on measuring, does not), and
+the next readout arms it again. The readouts are asked as before, once per readout time, with the exposure (integration)
+time of the unit: the instrument is woken up by each readout, not earlier. The option can be changed during an
+experiment. It is **not advised when the readout time is less than 5 s longer than the exposure (integration) time
+(times the averages)**: the instrument would be disarmed and armed again within a few seconds, and a warning says so in the
+status bar and in the log. A missed readout also disarms the instrument, so that the next try arms it again. How an
+instrument is armed and stopped is up to its plugin (for a Thorlabs camera: ``start_acquisition`` when a readout is
+asked, ``clear_acquisition`` when it is stopped): check the first images of an instrument that you disarm.
+
 The modes, the ROIs, the recording options, the settings and the file (its folder and its name, the title, the sample, the
 operator and the protocol) cannot be changed during a log; the buttons showing or hiding a ROI or the temperature can be
-used, and so can the observations, the integration time, *Restart after missed* and *Restart attempts*. The controller is only given set-points: protect it with the bounds of its
+used, and so can the observations, the integration time, *Restart after missed*, *Restart attempts* and *Disarm between readouts*. The controller is only given set-points: protect it with the bounds of its
 actuator (*Set bounds* in the settings of the DAQ_Move), the extension does not know its limits (a Quantum Northwest TC 125
 refuses a temperature it does not accept).
 
