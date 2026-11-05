@@ -206,3 +206,41 @@ class TestOtherCameras:
         frame = bench.live()
 
         assert frame.shown is None and camera_info_of(bench.unit) == ''
+
+
+class TestTheSimulatedColorCamera:
+    @staticmethod
+    def driver():
+        import importlib.util
+        import pymodaq_plugins_thermospectro as package
+        from pathlib import Path
+        path = Path(package.__file__).parent / 'daq_viewer_plugins' / 'plugins_2D' / 'daq_2Dviewer_BayerMock.py'
+        spec = importlib.util.spec_from_file_location('bayer_mock_plugin', path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module.MockBayerDriver(width=64, height=48)
+
+    def test_raw_gives_the_10_bit_mosaic_and_the_default_converts_the_colors(self):
+        driver = self.driver()
+        assert driver.get_sensor_info() == ('bayer', 10)
+
+        converted = driver.read_frame()
+        driver.set_color_format('raw')
+        raw = driver.read_frame()
+
+        assert converted.shape == (48, 64, 3) and raw.shape == (48, 64) and raw.dtype == np.uint16
+        assert raw.max() <= 1023 and raw.max() > 100  # (the ADC is 10 bits)
+        assert converted.max() > raw.max()  # (the white balance of the driver pushes the values up)
+
+    def test_the_unit_gets_the_mosaic_and_can_show_it_as_colors(self, qtbot, release):
+        driver = self.driver()
+        driver.set_color_format('auto')
+        bench = Bench(qtbot, driver)
+        bench.camera.image = lambda: driver.read_frame()
+        bench.camera.height, bench.camera.width = 48, 64
+        release(bench.unit)
+
+        frame = bench.live()
+
+        assert driver.color_output == 'raw'
+        assert frame.n_channels == 3 and frame.dwa.data[0].max() <= 1023

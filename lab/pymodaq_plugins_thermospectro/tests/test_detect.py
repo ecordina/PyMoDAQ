@@ -757,6 +757,15 @@ class TestPlan:
         assert [(spec.name, spec.plugin, spec.recognized) for spec in result.modules] == [
             ('Thermo1', 'QNW_TC', True), ('Camera1', 'Mock', True)]
 
+    def test_a_simulated_color_camera_can_be_chosen_with_a_real_controller_or_none(self):
+        result = plan(CONFIGURATIONS['thermo_camera'], Detections(thermostats=THERMOSTATS[:1]),
+                      Options(camera_plugin='BayerMock'))
+
+        assert [(spec.name, spec.plugin, spec.recognized) for spec in result.modules] == [
+            ('Thermo1', 'QNW_TC', True), ('Camera1', 'BayerMock', True)]
+        mock = plan(CONFIGURATIONS['camera'], Detections(), Options(mock=True, camera_plugin='BayerMock'))
+        assert [(spec.plugin) for spec in mock.modules] == ['BayerMock']
+
     def test_the_plugin_of_the_controllers_can_be_chosen(self):
         mock = plan(CONFIGURATIONS['thermo_spectro'], Detections(), Options(thermostat_plugin='Mock'))
         other = plan(CONFIGURATIONS['thermo_spectro'], Detections(thermostats=THERMOSTATS), Options(

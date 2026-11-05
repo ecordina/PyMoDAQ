@@ -38,6 +38,7 @@ CAMERA_PLUGINS = ('Thorlabs_TSI', 'UC480')
 SPECTROMETER_PLUGIN = 'Seabreeze'
 THERMOSTAT_PLUGIN = 'QNW_TC'  # the only thermal controller which is recognized
 MOCK = 'Mock'
+BAYER_MOCK = 'BayerMock'  # a simulated color camera with a Bayer sensor (plugin of this package)
 #: the axis of the actuator which is the temperature, for the plugins which have several
 AXIS_NAMES = {THERMOSTAT_PLUGIN: 'Temperature', MOCK: 'Temp'}
 FTDI_VENDOR = 0x0403  # the vendor of the USB-serial converters of the Quantum Northwest controllers
@@ -340,7 +341,7 @@ def detect_all(configuration: Configuration, options: Optional[Options] = None) 
     if options.mock or not options.detect:
         return found
     wanted = [(configuration.spectrometers > 0, detect_spectrometers, 'spectrometers', {}),
-              (configuration.camera and options.camera_plugin != MOCK, detect_cameras, 'cameras',
+              (configuration.camera and options.camera_plugin not in (MOCK, BAYER_MOCK), detect_cameras, 'cameras',
                {'plugin': options.camera_plugin}),
               (configuration.thermostats > 0 and not options.ports and options.thermostat_plugin == THERMOSTAT_PLUGIN,
                detect_thermostats, 'thermostats', {})]
@@ -534,6 +535,9 @@ def _plan_spectrometer(name: str, index: int, options: Options, detections: Dete
 def _plan_camera(name: str, options: Options, detections: Detections, notes: list) -> ModuleSpec:
     dim = KIND_DETECTORS['camera']
     wanted = options.camera_plugin
+    if wanted == BAYER_MOCK:
+        return ModuleSpec(name, 'camera', BAYER_MOCK, dim, recognized=True, identity=MOCK,
+                          found='simulated color camera with a Bayer sensor (BayerMock)')
     if options.mock or wanted == MOCK:
         return ModuleSpec(name, 'camera', MOCK, dim, recognized=True, identity=MOCK, found='simulated camera (Mock)')
     candidates = [camera for camera in detections.cameras if wanted is None or camera.plugin == wanted] \
