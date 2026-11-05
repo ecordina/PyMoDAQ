@@ -75,8 +75,8 @@ class DAQ_2DViewer_BayerMock(DAQ_Viewer_base):
 
     def ini_detector(self, controller=None):
         self.controller = MockBayerDriver() if self.is_master else controller
-        self.x_axis = Axis('x_axis', size=self.controller.width, index=1)
-        self.y_axis = Axis('y_axis', size=self.controller.height, index=0)
+        self.x_axis = Axis('x_axis', offset=0., scaling=1., size=self.controller.width, index=1)
+        self.y_axis = Axis('y_axis', offset=0., scaling=1., size=self.controller.height, index=0)
         return 'Simulated Bayer camera', True
 
     def commit_settings(self, param):
