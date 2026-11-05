@@ -376,6 +376,12 @@ class Frame:
     dwa: DataWithAxes
     units: str = UNITS
     axis: Optional[object] = None  # a camera has no axis to save along with its data: the dwa has its own
+    shown: Optional[DataWithAxes] = None  # what is displayed and measured, if it is not what is recorded (`dwa`)
+
+    @property
+    def display(self) -> DataWithAxes:
+        """The data which are shown and on which the ROIs are measured (the recorded ones unless told otherwise)"""
+        return self.shown if self.shown is not None else self.dwa
 
     @property
     def image(self) -> np.ndarray:
@@ -389,7 +395,7 @@ class Frame:
     def channels(self) -> list[np.ndarray]:
         """The 2D arrays of all the channels, as the camera gave them (a ROI takes its pixels from them before it computes
         anything: they are not converted)"""
-        arrays = [np.asarray(array) for array in self.dwa.data]
+        arrays = [np.asarray(array) for array in self.display.data]
         return [array for array in arrays if array.ndim == 2 and array.shape == self.y.shape] or [self.y]
 
     @property

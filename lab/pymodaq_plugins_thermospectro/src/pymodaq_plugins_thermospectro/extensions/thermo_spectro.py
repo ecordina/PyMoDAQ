@@ -159,6 +159,7 @@ class ThermoSpectro(CustomExt):
             unit.axis_units_changed.connect(lambda units, u=unit: self._on_axis_units(u, units))
             if isinstance(unit, CameraUnit):
                 unit.channels_changed.connect(lambda n, u=unit: self._on_channels(u, n))
+                unit.bayer_changed.connect(lambda on, u=unit: u.settings.set_bayer(on))
             self.units.append(unit)
         self.views = [(CameraView if isinstance(unit, CameraUnit) else UnitView)(unit, parent=self)
                       for unit in self.units]

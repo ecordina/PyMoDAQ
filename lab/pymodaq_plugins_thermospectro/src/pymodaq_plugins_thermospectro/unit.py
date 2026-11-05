@@ -31,7 +31,9 @@ from pymodaq.utils.data import DataActuator
 from pymodaq.utils.managers.modules import ModuleType
 
 from pymodaq_plugins_thermospectro.buffers import TimeSeries
+from pymodaq_plugins_thermospectro import bayer
 from pymodaq_plugins_thermospectro.camera import UNITS as PIXELS, Frame, extract_frame
+from pymodaq_plugins_thermospectro.camera_info import find_controller
 from pymodaq_plugins_thermospectro.ramp import (END_AT_FINAL, Phase, RampProgram, RampRunner, RampState,
                                                 format_duration)
 from pymodaq_plugins_thermospectro.rois import Roi
@@ -490,6 +492,7 @@ class Unit(QtCore.QObject):
         self._connect(self.detector, self.detector.grab_done_signal, self._on_spectrum)
         self._connect(self.detector, self.detector.init_signal,
                       lambda ok, m=self.detector: self._on_module_init(m, ok))
+        self._detector_ready()
         if self.thermostat is not None:
             # (not move_done_signal: some plugins send the target back as if it were measured)
             self._connect(self.thermostat, self.thermostat.current_value_signal, self._on_temperature)
@@ -569,7 +572,14 @@ class Unit(QtCore.QObject):
         for timer in (self._timer, self._miss_timer, self._resume_timer, self._first_timer):
             timer.stop()
 
+    def _detector_ready(self):
+        """The detector is initialized (live view begins, or it was initialized again): what a kind of unit asks of it"""
+
+    def _detector_released(self):
+        """The unit lets the detector go"""
+
     def _release(self):
+        self._detector_released()
         self._stop_timers()
         self._cancel_reinit()
         self._disconnect()
@@ -772,6 +782,7 @@ class Unit(QtCore.QObject):
             self._reiniting = False
             self._count_downtime()
             logger.info(f'{detector.title} is initialized again ({self.n_missed} readouts missed so far)')
+            self._detector_ready()
             self._requested_integration = None  # (the new plugin is told the integration time again)
             self.apply_integration_time()
             if not self.failed:
@@ -1310,7 +1321,10 @@ class CameraUnit(Unit):
         ROIs and the ROI manager show the choice of the channels if there are several
     """
     channels_changed = QtCore.Signal(int)
+    bayer_changed = QtCore.Signal(bool)
     _n_channels = 0  # (how many channels the last image had: 0 before the first one)
+    bayer_offset: Optional[tuple] = None  # (row, column) of a red pixel if the driver gives the Bayer mosaic of a color sensor
+    _driver = None
     PENDING_MIN = 30.0  # (the plugin of a camera gives up on its own when a frame does not come in 20 s)
     WHAT = 'camera'
     DATA = 'image'
@@ -1322,12 +1336,53 @@ class CameraUnit(Unit):
     def label(self) -> str:
         return 'Camera'
 
+    def _detector_ready(self):
+        """A color camera is asked for its raw counts: the driver (pylablib) debayers and applies the white balance and the
+        color matrices by default, which changes the values. What is shown and recorded as colors is made from the mosaic
+        here, see :mod:`.bayer`"""
+        driver = find_controller(self.detector)
+        if driver is None or not hasattr(driver, 'set_color_format'):
+            return
+        try:
+            if str(driver.get_sensor_info()[0]) != 'bayer':
+                return
+            driver.set_color_format('raw')
+            self.bayer_offset = bayer.phase_offset(driver.get_color_info().filter_array_phase)
+            self._bayer_phase = str(driver.get_color_info().filter_array_phase)
+        except Exception:
+            logger.warning(f'{self.detector.title}: the raw counts of the color camera could not be asked for', exc_info=True)
+            return
+        self._driver = driver
+        self.bayer_changed.emit(True)
+
+    def _detector_released(self):
+        driver, self._driver = self._driver, None
+        self.bayer_offset = None
+        if driver is not None:  # (the plugin goes back to what it was: its own viewer shows colors)
+            try:
+                driver.set_color_format('auto')
+            except Exception:
+                logger.warning('The color format of the camera could not be restored', exc_info=True)
+
+    def raw_info(self) -> dict:
+        """What the file says of the values and of the format of the images (see :class:`.camera_info.CameraInfo`)"""
+        if self.bayer_offset is None:
+            return {}
+        return {'raw_counts': True, 'bayer_phase': getattr(self, '_bayer_phase', ''),
+                'image_format': bayer.RGB if self.settings.bayer_record_rgb else bayer.BAYER}
+
     def _store_data(self, dte: DataToExport) -> bool:
         found = extract_frame(dte)
         if found is None:
             return False
         dwa, image = found
-        self.spectrum = Frame(image, time.monotonic(), dwa)
+        shown = None
+        if self.bayer_offset is not None and len(dwa.data) == 1:  # (the mosaic: colors only on request)
+            rgb = bayer.rgb_data(dwa, self.bayer_offset) if (
+                self.settings.bayer_display_rgb or self.settings.bayer_record_rgb) else None
+            shown = rgb if self.settings.bayer_display_rgb else dwa
+            dwa = rgb if self.settings.bayer_record_rgb else dwa
+        self.spectrum = Frame(image, time.monotonic(), dwa, shown=shown)
         self.spectrum_dirty = True
         if not self._axis_known:
             self.axis_units, self._axis_known = PIXELS, True

@@ -220,7 +220,7 @@ def _unit_definition(number: int, rois: Sequence[Roi], enabled: bool, kind: str,
                 f'{"exposure" if cam else "integration"} time, in ms, of its readout: the values (curves and file) are '
                 f'then per millisecond, and do not jump when the time is changed during an experiment. The time is '
                 f'saved too. {SAVED_AS_THEY_COME[kind]} Not while an experiment runs'},
-    ] + SPECTRA_OPTION[kind] + [
+    ] + SPECTRA_OPTION[kind] + (BAYER_LEAVES if cam else []) + [
         {'title': 'Record to disk:', 'name': 'record', 'type': 'group', 'children': [
             {'title': 'The full image:', 'name': 'image', 'type': 'bool', 'value': False,
              'tip': 'Save the whole image (a lot of data: a camera gives megabytes), every "Full image every" seconds'}
@@ -839,6 +839,22 @@ class UnitSettings:
                 self.param.child('rois', key).setOpts(removable=not locked)
 
 
+RGB_CHOICE = 'RGB (raw counts, interpolated)'
+BAYER_CHOICE = 'Bayer (1 channel mosaic)'
+BAYER_LEAVES = [
+    {'title': 'Show the Bayer image as:', 'name': 'bayer_display', 'type': 'list', 'limits': [RGB_CHOICE, BAYER_CHOICE],
+     'value': RGB_CHOICE, 'visible': False,
+     'tip': 'Only for a color camera. Its values are always the raw counts of the sensor (no white balance, no color matrix, '
+            'nothing clipped). The mosaic has one channel; the RGB image fills the missing colors of each pixel with the mean '
+            'of its neighbours of that color, and the measured pixels keep their count. The ROIs are measured on what is '
+            'shown'},
+    {'title': 'Record the Bayer image as:', 'name': 'bayer_record', 'type': 'list', 'limits': [RGB_CHOICE, BAYER_CHOICE],
+     'value': BAYER_CHOICE, 'visible': False,
+     'tip': 'Only for a color camera: what the full images and the crops of the file are, whatever is shown. The mosaic is '
+            'exactly what the sensor measured (1 channel); the RGB image is interpolated from it (3 channels, float)'},
+]
+
+
 class CameraSettings(UnitSettings):
     """The settings of a unit whose detector is a camera: the ROIs are rectangles of the image (in pixels)
 
@@ -869,6 +885,24 @@ class CameraSettings(UnitSettings):
 
     def roi_definition(self, key: str, roi) -> dict:
         return rect_roi_definition(key, roi, self.axis_units, self.n_channels)
+
+    @property
+    def bayer_display_rgb(self) -> bool:
+        """A color camera is shown (and its ROIs are measured) as red, green and blue interpolated from the mosaic"""
+        leaf = self.param.names.get('bayer_display')
+        return leaf is None or leaf.value() == RGB_CHOICE
+
+    @property
+    def bayer_record_rgb(self) -> bool:
+        """The images of a color camera are recorded as red, green and blue interpolated from the mosaic (not as the mosaic)"""
+        leaf = self.param.names.get('bayer_record')
+        return leaf is not None and leaf.value() == RGB_CHOICE
+
+    def set_bayer(self, available: bool):
+        """The camera gives the raw mosaic of a color sensor: the choice of what is shown and recorded is offered"""
+        for name in ('bayer_display', 'bayer_record'):
+            if name in self.param.names:
+                self.param.child(name).setOpts(visible=bool(available))
 
     def set_channel_count(self, n: int) -> bool:
         """The images of the camera have `n` channels

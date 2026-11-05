@@ -263,6 +263,8 @@ readout arms it again (the readouts are still asked once per readout time, with 
 unit). It can be changed during an experiment. It is not advised when the readout time is less than 5 s longer than the
 exposure (integration) time times the averages: a warning is given then.
 
+**Color camera, raw counts.** For a camera with a color (Bayer) sensor the extension asks the driver for the raw counts of the ADC (no white balance, no color matrix, nothing clipped) and gives the driver back its own conversion when the live view stops. Two settings of the camera unit say what the mosaic becomes: *Show the Bayer image as* (default: RGB) and *Record the Bayer image as* (default: Bayer, the 1 channel mosaic exactly as the sensor measured it). RGB means red, green and blue interpolated from the mosaic (mean of the measured neighbours of each color, the measured pixels keep their count, float). The ROIs are measured on what is shown. The file says (attribute `camera_info`) that the counts are raw, the Bayer phase and the format of the images. A monochrome camera is left as it is.
+
 ### A spectrometer or a camera which is lost
 
 Each restart is an **attempt**. After *Restart attempts* of them (3 by default, 0: no restart; it can be changed during an

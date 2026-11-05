@@ -204,6 +204,8 @@ status bar and in the log. A missed readout also disarms the instrument, so that
 instrument is armed and stopped is up to its plugin (for a Thorlabs camera: ``start_acquisition`` when a readout is
 asked, ``clear_acquisition`` when it is stopped): check the first images of an instrument that you disarm.
 
+**Color camera, raw counts.** For a camera with a color (Bayer) sensor the extension asks the driver for the raw counts of the ADC (no white balance, no color matrix, nothing clipped) and gives the driver back its own conversion when the live view stops. Two settings of the camera unit say what the mosaic becomes: *Show the Bayer image as* (default: RGB) and *Record the Bayer image as* (default: Bayer, the 1 channel mosaic exactly as the sensor measured it). RGB means red, green and blue interpolated from the mosaic (mean of the measured neighbours of each color, the measured pixels keep their count, float). The ROIs are measured on what is shown. The file says (attribute ``camera_info``) that the counts are raw, the Bayer phase and the format of the images. A monochrome camera is left as it is.
+
 The modes, the ROIs, the recording options, the settings and the file (its folder and its name, the title, the sample, the
 operator and the protocol) cannot be changed during a log; the buttons showing or hiding a ROI or the temperature can be
 used, and so can the observations, the integration time, *Restart after missed*, *Restart attempts* and *Disarm between readouts*. The controller is only given set-points: protect it with the bounds of its

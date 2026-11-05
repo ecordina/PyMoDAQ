@@ -61,6 +61,9 @@ class CameraInfo:
     sensor_type: str = ''  # 'mono', 'bayer', 'mono_pol' (Thorlabs)
     binning: tuple[int, int] = (1, 1)  # along x and y
     window: Optional[tuple[int, int, int, int]] = None  # of the sensor, in its pixels: x start, x end, y start, y end
+    bayer_phase: str = ''  # where the red pixels are in the mosaic of a color camera (what the driver says)
+    image_format: str = ''  # what the images of the file are: 'bayer' (the mosaic, one channel) or 'rgb' (interpolated)
+    raw_counts: bool = False  # the values are the counts of the ADC: no white balance, no color matrix
 
     def __bool__(self) -> bool:
         """Whether the camera said anything at all"""
@@ -95,6 +98,15 @@ class CameraInfo:
         if not self.pixel_um:
             return None
         return self.pixel_um[0] * max(1, int(self.binning[0])), self.pixel_um[1] * max(1, int(self.binning[1]))
+
+
+def find_controller(detector):
+    """The driver object of the plugin of a detector module of the Dashboard (None if it has none: a Mock module)"""
+    if detector is None:
+        return None
+    plugin = getattr(detector, 'plugin', None)  # (the module of the Dashboard: its plugin holds the driver)
+    controller = getattr(plugin, 'controller', None)
+    return controller if controller is not None else getattr(detector, 'controller', None)
 
 
 def _text(value) -> str:

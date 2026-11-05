@@ -60,7 +60,7 @@ from pymodaq.utils.h5modules.module_saving import (
     ExtensionSaver, DetectorTimeSaver, ActuatorTimeSaver, GroupModuleType)
 
 from pymodaq_plugins_thermospectro.camera import window_ranges
-from pymodaq_plugins_thermospectro.camera_info import read_camera_info
+from pymodaq_plugins_thermospectro.camera_info import find_controller, read_camera_info
 from pymodaq_plugins_thermospectro.ramp import PHASE_CODES
 from pymodaq_plugins_thermospectro.rois import unique_names
 from pymodaq_plugins_thermospectro.unit_settings import DEFAULT_INTENSITY_UNITS
@@ -107,11 +107,9 @@ def camera_info_of(unit) -> str:
     detector = unit.detector
     if getattr(unit.settings, 'KIND', '') != 'camera' or detector is None:
         return ''
-    plugin = getattr(detector, 'plugin', None)  # (the module of the Dashboard: its plugin holds the driver)
-    controller = getattr(plugin, 'controller', None)
-    if controller is None:
-        controller = getattr(detector, 'controller', None)
-    info = read_camera_info(controller)
+    info = read_camera_info(find_controller(detector))
+    for key, value in (getattr(unit, 'raw_info', lambda: {})()).items():  # (what the extension asked of a color camera)
+        setattr(info, key, value)
     return info.to_json() if info else ''
 
 
