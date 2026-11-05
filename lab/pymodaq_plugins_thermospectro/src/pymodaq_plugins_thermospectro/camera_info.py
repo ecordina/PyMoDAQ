@@ -62,8 +62,10 @@ class CameraInfo:
     binning: tuple[int, int] = (1, 1)  # along x and y
     window: Optional[tuple[int, int, int, int]] = None  # of the sensor, in its pixels: x start, x end, y start, y end
     bayer_phase: str = ''  # where the red pixels are in the mosaic of a color camera (what the driver says)
-    image_format: str = ''  # what the images of the file are: 'bayer' (the mosaic, one channel) or 'rgb' (interpolated)
+    image_format: str = ''  # what the images of the file are: 'bayer' (the mosaic, one channel), 'rgb' (interpolated) or 'rgb_measured' (not interpolated: nan where a color was not measured)
     raw_counts: bool = False  # the values are the counts of the ADC: no white balance, no color matrix
+    interpolation: str = ''  # what was interpolated in the images of the file: 'none' or the text of bayer.BILINEAR
+    roi_interpolation: str = ''  # ... in the image the values of the ROIs were measured on (what was shown)
 
     def __bool__(self) -> bool:
         """Whether the camera said anything at all"""

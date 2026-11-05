@@ -845,13 +845,24 @@ BAYER_LEAVES = [
     {'title': 'Show the Bayer image as:', 'name': 'bayer_display', 'type': 'list', 'limits': [RGB_CHOICE, BAYER_CHOICE],
      'value': RGB_CHOICE, 'visible': False,
      'tip': 'Only for a color camera. Its values are always the raw counts of the sensor (no white balance, no color matrix, '
-            'nothing clipped). The mosaic has one channel; the RGB image fills the missing colors of each pixel with the mean '
-            'of its neighbours of that color, and the measured pixels keep their count. The ROIs are measured on what is '
-            'shown'},
+            'nothing clipped). The mosaic has one channel; the RGB image fills the missing colors of each pixel by bilinear '
+            'interpolation (see "Interpolate the colors"), and the measured pixels keep their count. The ROIs are measured on '
+            'what is shown'},
     {'title': 'Record the Bayer image as:', 'name': 'bayer_record', 'type': 'list', 'limits': [RGB_CHOICE, BAYER_CHOICE],
      'value': BAYER_CHOICE, 'visible': False,
      'tip': 'Only for a color camera: what the full images and the crops of the file are, whatever is shown. The mosaic is '
             'exactly what the sensor measured (1 channel); the RGB image is interpolated from it (3 channels, float)'},
+    {'title': 'Interpolate the colors:', 'name': 'bayer_interpolate', 'type': 'bool', 'value': True, 'visible': False,
+     'tip': 'Only for a color camera, and for the RGB images (shown or recorded). Ticked: BILINEAR interpolation. Each '
+            'pixel of the sensor measured one color behind its filter (red, green or blue); each of the 2 others is the plain '
+            'mean of the pixels of that color among its 8 neighbours: for a red or a blue pixel, the green is the mean of its '
+            '4 neighbours above, below, left and right, and the other color the mean of its 4 diagonal neighbours; for a green '
+            'pixel, the red and the blue are the mean of its 2 neighbours of that color. The pixels which measured a color '
+            'keep their count. Nothing else is done: no edge detection, no white balance, no color matrix, nothing '
+            'clipped (the borders of the image have fewer neighbours). Unticked: nothing is interpolated, each channel only '
+            'holds the pixels which measured that color (a red one for each 4 pixels, a green one for each 2, a blue one for '
+            'each 4) and is nan (empty) elsewhere; the ROIs are measured on the pixels which are there. What was done is '
+            'written in the file (camera_info). Not while an experiment runs'},
 ]
 
 
@@ -898,9 +909,15 @@ class CameraSettings(UnitSettings):
         leaf = self.param.names.get('bayer_record')
         return leaf is not None and leaf.value() == RGB_CHOICE
 
+    @property
+    def bayer_interpolate(self) -> bool:
+        """The missing colors of the RGB images of a color camera are interpolated (the default)"""
+        leaf = self.param.names.get('bayer_interpolate')  # (a tree saved by an older version has none)
+        return leaf is None or bool(leaf.value())
+
     def set_bayer(self, available: bool):
         """The camera gives the raw mosaic of a color sensor: the choice of what is shown and recorded is offered"""
-        for name in ('bayer_display', 'bayer_record'):
+        for name in ('bayer_display', 'bayer_record', 'bayer_interpolate'):
             if name in self.param.names:
                 self.param.child(name).setOpts(visible=bool(available))
 

@@ -18,7 +18,13 @@ PHASE_OFFSETS = {'red': (0, 0), 'blue': (1, 1), 'green_left_of_red': (0, 1), 'gr
                  'green_left_or_red': (0, 1), 'green_left_or_blue': (1, 0)}
 LABELS = ['Red', 'Green', 'Blue']
 BAYER = 'bayer'
-RGB = 'rgb'
+RGB = 'rgb'  # (interpolated)
+RGB_MEASURED = 'rgb_measured'  # (not interpolated: nan where a color was not measured)
+#: What the file says about the colors which were interpolated, and about those which were not
+NO_INTERPOLATION = 'none'
+BILINEAR = ('bilinear: each color a pixel did not measure is the mean of the pixels of that color among its 8 '
+            'neighbours (2 or 4 of them; fewer at the edges of the image), the pixels which measured a color keep '
+            'their count; no white balance, no color matrix, nothing clipped')
 
 
 def phase_offset(phase) -> tuple[int, int]:
@@ -42,16 +48,25 @@ def _box(array: np.ndarray) -> np.ndarray:
     return sum(padded[i:i + rows, j:j + columns] for i in range(3) for j in range(3))
 
 
-def debayer(mosaic, offset: tuple[int, int] = (0, 0)) -> np.ndarray:
+def debayer(mosaic, offset: tuple[int, int] = (0, 0), interpolate: bool = True) -> np.ndarray:
     """The mosaic as a color image ``(3, rows, columns)`` (red, green, blue) in float32, with no change of the counts
 
     A pixel keeps the count it measured in its own color; its other colors are the mean of the measured neighbours of that
     color (bilinear interpolation). Nothing is scaled, multiplied or clipped.
+
+    Without interpolation (`interpolate` False) the other colors of a pixel are **nan**: each channel only holds the pixels
+    which measured that color, at their place in the image (the image has as many pixels as the mosaic, a red one for
+    each 4 of them, a green one for each 2, a blue one for each 4).
     """
     mosaic = np.asarray(mosaic, dtype=np.float32)
     if mosaic.ndim != 2:
         raise ValueError('The Bayer mosaic is a 2D image')
     found = masks(mosaic.shape, offset)
+    if not interpolate:
+        out = np.full((3,) + mosaic.shape, np.nan, dtype=np.float32)
+        for index in range(3):
+            out[index][found[index]] = mosaic[found[index]]
+        return out
     out = np.empty((3,) + mosaic.shape, dtype=np.float32)
     for index in range(3):
         mask = found[index].astype(np.float32)
@@ -61,8 +76,8 @@ def debayer(mosaic, offset: tuple[int, int] = (0, 0)) -> np.ndarray:
     return out
 
 
-def rgb_data(dwa: DataWithAxes, offset: tuple[int, int]) -> DataWithAxes:
-    """The mosaic of `dwa` as a color image (channels red, green, blue, labeled), on the same axes"""
-    colors = debayer(dwa.data[0], offset)
+def rgb_data(dwa: DataWithAxes, offset: tuple[int, int], interpolate: bool = True) -> DataWithAxes:
+    """The mosaic of `dwa` as a color image (channels red, green, blue, labeled), on the same axes (see :func:`debayer`)"""
+    colors = debayer(dwa.data[0], offset, interpolate)
     return DataRaw(dwa.name, data=[colors[0], colors[1], colors[2]], axes=list(dwa.axes), labels=list(LABELS),
                    units=dwa.units, source=dwa.source)

@@ -177,6 +177,9 @@ def rect_value(image, x0: float, x1: float, y0: float, y1: float, aggregation: s
     With several channels the aggregation is made on each of the selected ones, and the results are averaged:
     ``(std(green) + std(blue)) / 2`` for the standard deviation and the green and blue channels.
 
+    A pixel which is nan is not part of the aggregation (the color image of a Bayer sensor which is not interpolated has
+    nan where a channel was not measured): a channel with no pixel left is not part of the average either.
+
     Parameters
     ----------
     image: ndarray or sequence of ndarray
@@ -206,7 +209,15 @@ def rect_value(image, x0: float, x1: float, y0: float, y1: float, aggregation: s
         pixels = rect_pixels(arrays[index], x0, x1, y0, y1)
         if pixels is None:  # (the window is the same for all the channels)
             return float('nan')
+        if pixels.dtype.kind == 'f':
+            measured = ~np.isnan(pixels)
+            if not measured.all():
+                if not measured.any():
+                    continue
+                pixels = pixels[measured]
         results.append(aggregate(pixels, aggregation))
+    if not results:
+        return float('nan')
     return float(np.mean(results))
 
 

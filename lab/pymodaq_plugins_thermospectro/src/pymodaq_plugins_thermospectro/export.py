@@ -986,8 +986,13 @@ def camera_sentence(camera: UnitData, how: str) -> str:
         parts.append('raw counts of the ADC (no white balance, no color matrix)')
     if info.get('bayer_phase'):
         parts.append(f'Bayer phase {info["bayer_phase"]}, images recorded as '
-                     + ('the mosaic (1 channel)' if info.get('image_format') == 'bayer'
-                        else 'red, green, blue interpolated from the mosaic'))
+                     + {'bayer': 'the mosaic (1 channel)',
+                        'rgb_measured': 'red, green, blue, each only where it was measured (not interpolated)'}.get(
+                         info.get('image_format'), 'red, green, blue interpolated from the mosaic'))
+    if info.get('interpolation'):
+        parts.append('interpolation of the colors of the images: ' + str(info['interpolation']))
+    if info.get('roi_interpolation') and info.get('roi_interpolation') != info.get('interpolation'):
+        parts.append('interpolation of the colors the ROIs were measured on: ' + str(info['roi_interpolation']))
     binning = info.get('binning') or (1, 1)
     if tuple(binning) != (1, 1):
         parts.append(f'binning {binning[0]} x {binning[1]}')

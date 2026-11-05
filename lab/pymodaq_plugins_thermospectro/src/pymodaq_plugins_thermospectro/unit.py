@@ -1339,9 +1339,15 @@ class CameraUnit(Unit):
     def _detector_ready(self):
         """A color camera is asked for its raw counts: the driver (pylablib) debayers and applies the white balance and the
         color matrices by default, which changes the values. What is shown and recorded as colors is made from the mosaic
-        here, see :mod:`.bayer`"""
+        here, see :mod:`.bayer`
+
+        The LED of a Thorlabs camera (it lights when the camera is open) is switched off, whatever its sensor is.
+        """
         driver = find_controller(self.detector)
-        if driver is None or not hasattr(driver, 'set_color_format'):
+        if driver is None:
+            return
+        self._led_off(driver)
+        if not hasattr(driver, 'set_color_format'):
             return
         try:
             if str(driver.get_sensor_info()[0]) != 'bayer':
@@ -1354,6 +1360,16 @@ class CameraUnit(Unit):
             return
         self._driver = driver
         self.bayer_changed.emit(True)
+
+    def _led_off(self, driver):
+        """Switch off the LED of the camera (the camera forgets it when it is closed or unplugged: it is done each time the
+        unit takes the camera, also when the camera was initialized again)"""
+        if not hasattr(driver, 'enable_led'):
+            return
+        try:
+            driver.enable_led(False)
+        except Exception:
+            logger.warning(f'{self.detector.title}: the LED of the camera could not be switched off', exc_info=True)
 
     def _detector_released(self):
         driver, self._driver = self._driver, None
@@ -1368,8 +1384,15 @@ class CameraUnit(Unit):
         """What the file says of the values and of the format of the images (see :class:`.camera_info.CameraInfo`)"""
         if self.bayer_offset is None:
             return {}
-        return {'raw_counts': True, 'bayer_phase': getattr(self, '_bayer_phase', ''),
-                'image_format': bayer.RGB if self.settings.bayer_record_rgb else bayer.BAYER}
+        if not self.settings.bayer_record_rgb:
+            image_format = bayer.BAYER
+        else:
+            image_format = bayer.RGB if self.settings.bayer_interpolate else bayer.RGB_MEASURED
+        interpolated = self.settings.bayer_interpolate
+        saved = bayer.BILINEAR if image_format == bayer.RGB else bayer.NO_INTERPOLATION
+        measured = bayer.BILINEAR if (self.settings.bayer_display_rgb and interpolated) else bayer.NO_INTERPOLATION
+        return {'raw_counts': True, 'bayer_phase': getattr(self, '_bayer_phase', ''), 'image_format': image_format,
+                'interpolation': saved, 'roi_interpolation': measured}
 
     def _store_data(self, dte: DataToExport) -> bool:
         found = extract_frame(dte)
@@ -1378,7 +1401,7 @@ class CameraUnit(Unit):
         dwa, image = found
         shown = None
         if self.bayer_offset is not None and len(dwa.data) == 1:  # (the mosaic: colors only on request)
-            rgb = bayer.rgb_data(dwa, self.bayer_offset) if (
+            rgb = bayer.rgb_data(dwa, self.bayer_offset, self.settings.bayer_interpolate) if (
                 self.settings.bayer_display_rgb or self.settings.bayer_record_rgb) else None
             shown = rgb if self.settings.bayer_display_rgb else dwa
             dwa = rgb if self.settings.bayer_record_rgb else dwa

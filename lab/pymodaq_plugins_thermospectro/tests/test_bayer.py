@@ -1,5 +1,6 @@
 """The raw counts of a color camera: asked of the driver, shown and recorded as the mosaic or as colors without a change"""
 import json
+import math
 import time
 from collections import namedtuple
 
@@ -35,6 +36,19 @@ class FakeDriver:
 
     def set_color_format(self, color_output='auto', color_space='linear'):
         self.formats.append(color_output)
+
+    led = True
+
+    def enable_led(self, enabled=True):
+        self.led = enabled
+
+
+class MonochromeDriver:
+    """A driver of a camera whose sensor has no colors: it has an LED and nothing else of what the extension uses"""
+    led = True
+
+    def enable_led(self, enabled=True):
+        self.led = enabled
 
 
 def mosaic(rows=8, columns=10):
@@ -255,3 +269,182 @@ class TestPyMoDAQFindsThePlugin:
         names = [info.name for info in pkgutil.iter_modules([str(folder.path.parent)])]
 
         assert 'daq_2Dviewer_BayerMock' in names  # (what pymodaq.utils.daq_utils does to list the 2D detectors)
+
+
+class TestTheLedOfTheCamera:
+    def test_the_led_is_switched_off_when_the_camera_is_taken(self, qtbot, release):
+        driver = FakeDriver()
+        bench = Bench(qtbot, driver)
+        release(bench.unit)
+        assert driver.led
+
+        bench.live()
+
+        assert not driver.led
+
+    def test_also_for_a_camera_without_colors(self, qtbot, release):
+        driver = MonochromeDriver()
+        bench = Bench(qtbot, driver)
+        release(bench.unit)
+
+        bench.live()
+
+        assert not driver.led and bench.unit.bayer_offset is None
+
+    def test_a_camera_without_an_led_is_left_alone(self, qtbot, release):
+        class WithoutLed(FakeDriver):
+            @property
+            def enable_led(self):
+                raise AttributeError('enable_led')
+
+        bench = Bench(qtbot, WithoutLed())
+        release(bench.unit)
+
+        bench.live()
+
+        assert bench.unit.state == UnitState.LIVE
+
+    def test_a_camera_whose_led_cannot_be_switched_off_is_still_read(self, qtbot, release):
+        driver = FakeDriver()
+
+        def failing(enabled=True):
+            raise OSError('no answer')
+
+        driver.enable_led = failing
+        bench = Bench(qtbot, driver)
+        release(bench.unit)
+
+        frame = bench.live()
+
+        assert frame is not None and driver.formats == ['raw']
+
+
+class TestWithoutInterpolation:
+    def test_each_channel_only_holds_the_pixels_which_measured_its_color(self):
+        data = mosaic()
+        colors = bayer.debayer(data, (0, 0), interpolate=False)
+
+        assert colors.shape == (3, 8, 10) and colors.dtype == np.float32
+        found = bayer.masks(data.shape, (0, 0))
+        for channel in range(3):
+            assert np.array_equal(colors[channel][found[channel]], data[found[channel]])  # (the count it measured)
+            assert np.isnan(colors[channel][~found[channel]]).all()
+        assert [int(found[channel].sum()) for channel in range(3)] == [20, 40, 20]  # (a quarter, a half, a quarter)
+
+    def test_the_data_keep_their_axes(self):
+        from pymodaq_data.data import Axis, DataRaw
+        axes = [Axis(label='y', units='pixels', data=np.arange(8.), index=0), Axis(label='x', units='pixels', data=np.arange(10.), index=1)]
+        dwa = DataRaw('image', data=[mosaic()], axes=axes, labels=['intensity'])
+
+        rgb = bayer.rgb_data(dwa, (0, 0), interpolate=False)
+
+        assert rgb.labels == ['Red', 'Green', 'Blue'] and [a.size for a in rgb.axes] == [8, 10]
+
+    def test_the_pixels_which_are_not_there_are_not_part_of_a_measurement(self):
+        from pymodaq_plugins_thermospectro.camera import rect_value
+        colors = bayer.debayer(mosaic(), (0, 0), interpolate=False)
+
+        assert rect_value(list(colors), 0, 8, 0, 8, 'mean', channels=[0]) == pytest.approx(100.)
+        assert rect_value(list(colors), 0, 8, 0, 8, 'mean', channels=[2]) == pytest.approx(300.)
+        assert rect_value(list(colors), 0, 8, 0, 8, 'mean') == pytest.approx(200.)
+        assert rect_value(list(colors), 0, 8, 0, 8, 'sum', channels=[1]) == pytest.approx(200. * 32)
+        assert rect_value(list(colors), 0, 8, 0, 8, 'max', channels=[0, 1, 2]) == pytest.approx(200.)  # ((100 + 200 + 300) / 3)
+
+    def test_a_window_where_a_color_was_not_measured_is_made_of_the_other_colors(self):
+        from pymodaq_plugins_thermospectro.camera import rect_value
+        colors = bayer.debayer(mosaic(), (0, 0), interpolate=False)
+
+        # (the pixel of the first row and the first column is red: no green nor blue in it)
+        assert rect_value(list(colors), 0, 1, 0, 1, 'mean') == pytest.approx(100.)
+        assert math.isnan(rect_value(list(colors), 0, 1, 0, 1, 'mean', channels=[2]))  # (nothing of that color)
+
+    def test_the_default_is_to_interpolate_and_a_tree_saved_by_an_older_version_does_too(self, qtbot):
+        bench = Bench(qtbot, FakeDriver())
+        assert bench.settings.bayer_interpolate
+
+        bench.settings.param.removeChild(bench.settings.child('bayer_interpolate'))
+
+        assert bench.settings.bayer_interpolate
+
+    def test_it_is_offered_with_the_other_choices_and_not_changed_during_an_experiment(self, qtbot):
+        bench = Bench(qtbot, FakeDriver())
+        assert not bench.settings.child('bayer_interpolate').opts['visible']
+
+        bench.settings.set_bayer(True)
+        bench.settings.lock(True)
+
+        assert bench.settings.child('bayer_interpolate').opts['visible']
+        assert not bench.settings.child('bayer_interpolate').opts['enabled']
+
+    def test_the_unit_shows_the_colors_which_were_measured_and_measures_the_rois_on_them(self, qtbot, release):
+        bench = Bench(qtbot, FakeDriver(), bayer_interpolate=False)
+        release(bench.unit)
+
+        frame = bench.live()
+
+        assert frame.n_channels == 3
+        shown = frame.display.data
+        assert np.isnan(shown[0]).any() and np.isnan(shown[1]).any() and np.isnan(shown[2]).any()
+        assert np.nanmin(shown[0]) == np.nanmax(shown[0]) == 100.  # (the red pixels: what the sensor measured)
+        assert np.array_equal(frame.dwa.data[0], mosaic(frame.shape[0], frame.shape[1]))  # (the mosaic is recorded)
+        assert bench.measurements[-1].values[0] == pytest.approx(200.)
+
+    def test_the_file_says_the_colors_are_not_interpolated(self, qtbot, release):
+        bench = Bench(qtbot, FakeDriver(), bayer_interpolate=False, bayer_record=RGB_CHOICE)
+        release(bench.unit)
+        frame = bench.live()
+
+        info = json.loads(camera_info_of(bench.unit))
+
+        assert info['image_format'] == 'rgb_measured'
+        assert len(frame.dwa.data) == 3 and np.isnan(frame.dwa.data[0]).any()
+        interpolated = Bench(qtbot, FakeDriver(), bayer_record=RGB_CHOICE)
+        release(interpolated.unit)
+        interpolated.live()
+        assert json.loads(camera_info_of(interpolated.unit))['image_format'] == 'rgb'
+
+
+class TestTheFileSaysWhatWasInterpolated:
+    def info(self, qtbot, release, **settings):
+        bench = Bench(qtbot, FakeDriver(), **settings)
+        release(bench.unit)
+        bench.live()
+        return json.loads(camera_info_of(bench.unit))
+
+    def test_interpolated_colors_are_described_in_the_file(self, qtbot, release):
+        info = self.info(qtbot, release, bayer_record=RGB_CHOICE)
+
+        assert info['interpolation'] == bayer.BILINEAR and info['roi_interpolation'] == bayer.BILINEAR
+        assert 'bilinear' in info['interpolation'] and '8 neighbours' in info['interpolation']
+
+    def test_the_mosaic_is_recorded_as_it_was_measured_but_the_rois_are_measured_on_the_colors_shown(self, qtbot, release):
+        info = self.info(qtbot, release)  # (the defaults: the colors are shown, the mosaic is recorded)
+
+        assert info['interpolation'] == 'none' and info['image_format'] == 'bayer'
+        assert info['roi_interpolation'] == bayer.BILINEAR
+
+    def test_without_interpolation_the_file_says_none_twice(self, qtbot, release):
+        info = self.info(qtbot, release, bayer_record=RGB_CHOICE, bayer_interpolate=False)
+
+        assert info['interpolation'] == 'none' and info['roi_interpolation'] == 'none'
+
+    def test_the_rois_of_the_mosaic_are_measured_without_interpolation(self, qtbot, release):
+        info = self.info(qtbot, release, bayer_display=BAYER_CHOICE)
+
+        assert info['roi_interpolation'] == 'none' and info['interpolation'] == 'none'
+
+    def test_the_tif_files_say_it(self):
+        from types import SimpleNamespace
+        from pymodaq_plugins_thermospectro import export
+        camera = SimpleNamespace(camera_info={'raw_counts': True, 'bayer_phase': 'red', 'image_format': 'rgb',
+                                              'interpolation': bayer.BILINEAR, 'roi_interpolation': 'none'})
+
+        text = export.camera_sentence(camera, '')
+
+        assert 'interpolation of the colors of the images: bilinear' in text
+        assert 'the ROIs were measured on: none' in text
+
+    def test_a_tooltip_explains_the_interpolation(self, qtbot):
+        tip = Bench(qtbot, FakeDriver()).settings.child('bayer_interpolate').opts['tip']
+
+        assert 'BILINEAR' in tip and '8 neighbours' in tip and 'no white balance' in tip
