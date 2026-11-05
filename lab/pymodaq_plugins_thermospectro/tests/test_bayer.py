@@ -244,3 +244,14 @@ class TestTheSimulatedColorCamera:
 
         assert driver.color_output == 'raw'
         assert frame.n_channels == 3 and frame.dwa.data[0].max() <= 1023
+
+
+class TestPyMoDAQFindsThePlugin:
+    def test_the_folder_of_the_plugin_says_where_it_is_as_pymodaq_asks(self):
+        import importlib
+        import pkgutil
+        folder = importlib.import_module('pymodaq_plugins_thermospectro.daq_viewer_plugins.plugins_2D')
+
+        names = [info.name for info in pkgutil.iter_modules([str(folder.path.parent)])]
+
+        assert 'daq_2Dviewer_BayerMock' in names  # (what pymodaq.utils.daq_utils does to list the 2D detectors)
