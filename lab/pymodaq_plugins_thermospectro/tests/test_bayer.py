@@ -176,6 +176,19 @@ class TestACameraWithAColorSensor:
         assert bench.settings.child('bayer_display').opts['visible'] and bench.settings.child('bayer_record').opts['visible']
 
 
+class TestFindingTheDriver:
+    def test_the_driver_of_a_module_of_the_dashboard_is_in_its_controller_and_thread(self):
+        from types import SimpleNamespace
+        from pymodaq_plugins_thermospectro.camera_info import find_controller
+        driver = FakeDriver()
+        module = SimpleNamespace(_controller_and_thread=SimpleNamespace(controller=driver))
+
+        assert find_controller(module) is driver
+        assert find_controller(SimpleNamespace(controller=driver)) is driver
+        assert find_controller(SimpleNamespace(plugin=SimpleNamespace(controller=driver))) is driver
+        assert find_controller(SimpleNamespace()) is None and find_controller(None) is None
+
+
 class TestOtherCameras:
     def test_a_monochrome_camera_is_left_as_it_is(self, qtbot, release):
         driver = FakeDriver(sensor='mono')

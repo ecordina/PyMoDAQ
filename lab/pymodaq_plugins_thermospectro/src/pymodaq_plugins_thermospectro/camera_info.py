@@ -101,12 +101,18 @@ class CameraInfo:
 
 
 def find_controller(detector):
-    """The driver object of the plugin of a detector module of the Dashboard (None if it has none: a Mock module)"""
+    """The driver object of the plugin of a detector module of the Dashboard (None if it has none: a Mock module)
+
+    In PyMoDAQ 5 the module keeps it in ``_controller_and_thread.controller`` (the plugin lives in the thread of the module)
+    """
     if detector is None:
         return None
-    plugin = getattr(detector, 'plugin', None)  # (the module of the Dashboard: its plugin holds the driver)
-    controller = getattr(plugin, 'controller', None)
-    return controller if controller is not None else getattr(detector, 'controller', None)
+    holders = (getattr(detector, 'plugin', None), detector, getattr(detector, '_controller_and_thread', None))
+    for holder in holders:
+        controller = getattr(holder, 'controller', None)
+        if controller is not None:
+            return controller
+    return None
 
 
 def _text(value) -> str:
