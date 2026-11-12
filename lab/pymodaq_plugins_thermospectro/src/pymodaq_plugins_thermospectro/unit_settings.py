@@ -181,7 +181,13 @@ def _unit_definition(number: int, rois: Sequence[Roi], enabled: bool, kind: str,
                 f'another unit: only one of them then runs the ramp'},
         {'title': 'Exposure time:' if cam else 'Integration time:', 'name': 'integration_time', 'type': 'float',
          'value': DEFAULT_INTEGRATION_TIME, 'min': 0.0, 'suffix': 'ms',
-         'tip': f'Set on the {what} when the live view or an experiment starts'},
+         'tip': ('Set on the camera when the live view or an experiment starts, and again as soon as it is changed, also '
+                 'during an experiment: between two readouts (one on its way is not touched), then the next readout waits '
+                 'until the camera has run with the new time (the time of an image of each), so that each image is saved '
+                 'with the exposure time it was made with. A time not shorter than the readout time is refused during an '
+                 'experiment' if cam else
+                 'Set on the spectrometer when the live view starts, and before the next readout when it is changed '
+                 'during an experiment')},
         {'title': 'Readout time:', 'name': 'readout_time', 'type': 'float', 'value': DEFAULT_READOUT_TIME,
          'min': 0.05, 'suffix': 's',
          'tip': f'The {what} is read out, and a measurement recorded, once per readout time. '

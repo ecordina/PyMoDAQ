@@ -46,6 +46,7 @@ SERIAL_NAMES = ('serial', 'serial_number', 'serial_no', 'camera_serial', 'camera
 INDEX_NAMES = ('camera_index', 'index', 'camera_number', 'device_index')
 CHOICE_NAMES = ('camera', 'camera_list', 'camera_name', 'camera_id', 'device', 'devices')
 PLUGIN_HINTS = {'Thorlabs_TSI': 'python lab/install_lab.py --camera', 'UC480': 'python lab/install_lab.py --camera',
+                'Thorlabs_TSI_Trigger': 'python lab/install_lab.py --camera',
                 'Seabreeze': 'python lab/install_lab.py', 'QNW_TC': 'python lab/install_lab.py'}
 #: The variables with which opencv-python (the version with a GUI) points Qt to the Qt 5 it ships
 OPENCV_QT_VARIABLES = ('QT_QPA_PLATFORM_PLUGIN_PATH', 'QT_QPA_FONTDIR')
@@ -102,7 +103,8 @@ def make_parser(command: str) -> argparse.ArgumentParser:
                              'a Mock actuator with the axis Temp) and nothing is looked for')
     parser.add_argument('--camera-plugin', metavar='NAME',
                         help='the plugin of the camera (default: the one of the camera which was found, else '
-                             'Thorlabs_TSI; the cameras of the plugins Thorlabs_TSI and UC480 are recognized)')
+                             'Thorlabs_TSI; the cameras of the plugins Thorlabs_TSI, UC480 and Thorlabs_TSI_Trigger, '
+                             'the Thorlabs cameras with one image per trigger, are recognized)')
     parser.add_argument('--thermostat-plugin', metavar='NAME', default=detect.THERMOSTAT_PLUGIN,
                         help=f'the plugin of the thermal controllers, any actuator whose position is a temperature '
                              f'(default: {detect.THERMOSTAT_PLUGIN}, the only one which is recognized)')

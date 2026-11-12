@@ -39,6 +39,8 @@ from pymodaq_plugins_thermospectro.ramp import (END_AT_FINAL, Phase, RampProgram
 from pymodaq_plugins_thermospectro.rois import Roi
 from pymodaq_plugins_thermospectro.spectrometers import (Reading, Spectrum, extract_spectrum, set_integration_time,
                                                          wavelength_axis)
+from pymodaq_plugins_thermospectro import trigger_mode
+from pymodaq_plugins_thermospectro.trigger_mode import trigger_mode_of
 from pymodaq_plugins_thermospectro.unit_settings import DISARM_MIN_GAP, NONE, UnitSettings
 
 logger = set_logger(get_module_name(__file__))
@@ -79,7 +81,9 @@ class Measurement:
     index: int
         The number of this measurement since the unit started reading out
     t: float
-        When the readout started (epoch seconds): the integration of the spectrum follows
+        When the measurement was made (epoch seconds). For a camera: when its image reached the software (the plugin
+        stamped it as it got it from the camera, see :meth:`Unit._measurement_time`), whenever the readout was asked for.
+        For a spectrometer: when the readout was asked for, the integration of the spectrum follows
     spectrum: Spectrum
     rois: list of Roi
         The ROIs as they were when the spectrum was measured
@@ -158,6 +162,27 @@ class Unit(QtCore.QObject):
     REINIT_WAITS = (30., 60., 120., 300.)
     #: The time (s) an initialization may take
     REINIT_TIMEOUT = 60.
+    #: A time asked for during an experiment is given to the instrument at once, between two readouts, and the readout which
+    #: follows waits until the instrument has run with it (see :meth:`integration_changed`). Otherwise it is set just
+    #: before the next readout, which is made at once
+    ADJUSTS_AT_ONCE = False
+    #: What is added (s) to the time the instrument needs to run with a new time: an image exposed before the change is
+    #: still on its way, and the next one may have been prepared with the old time
+    SETTLE_MARGIN = 0.5
+    #: An experiment catches up with a spectrum (image) which comes after the next readout was due: that readout is not
+    #: skipped, it is asked for as soon as the spectrum is back, and the readout time counts again from there (see
+    #: :meth:`_catch_up`). Otherwise the readout due while the previous one is on its way is skipped
+    CATCHES_UP = False
+    #: A detector which is disarmed between its readouts is left this long (s) before it is armed again to catch up
+    DISARM_GUARD = 1.0
+    #: The unit writes in the file, as an observation marked ``[auto]``, how late its images were in the last LATENCY_REPORT_EVERY
+    #: seconds of an experiment when some came after the readout time (the file then tells it even if the log is lost, or the
+    #: program does not end properly). Nothing is written for a window without a late image
+    JOURNALS_LATENCY = False
+    LATENCY_REPORT_EVERY = 3600.0
+    #: A measurement is dated by the time its image reached the software (the stamp of the data of the plugin, else the
+    #: time the unit got it), not by the time the readout was asked for (which is what a spectrometer is dated by)
+    STAMPS_IMAGE = False
     #: What the detector of the unit is, in the messages
     WHAT = 'spectrometer'
     DATA = 'spectrum'
@@ -198,6 +223,15 @@ class Unit(QtCore.QObject):
         self.clock = time.perf_counter  # the clock of the ramp (replaced in the tests)
         self.n_measurements = 0
         self.n_skipped = 0  # readouts which were not made because the previous one was not over
+        self.n_caught_up = 0  # readouts which were due while the previous one was on its way, and were made once it was back
+        self._skipped_pending = 0  # ... due since the readout which is on its way was asked for (see _late_ticks)
+        self.n_latency = 0  # spectra (images) which came back after a readout, and how late they were (see _note_latency)
+        self.n_late = 0  # ... more than the readout time after it
+        self.latency_sum = self.latency_max = 0.
+        self._window = [time.monotonic(), 0, 0, 0., 0, None]  # since when, images, late ones, the longest, caught up, its parts
+        self.n_split = 0  # images whose delay is known in two parts: the plugin had it after..., the software got it...
+        self.plugin_sum = self.plugin_max = self.software_sum = self.software_max = 0.
+        self._data_time: Optional[float] = None  # the stamp of the data the detector delivered last (the plugin's clock)
         self.n_lost = 0  # readouts whose spectrum never came back
         self.n_lost_in_a_row = 0  # ... without any spectrum coming since the last of them
         self._series_misses = 0  # ... and without the detector having been initialized again since
@@ -229,6 +263,11 @@ class Unit(QtCore.QObject):
         self._first_timer = QtCore.QTimer(self)
         self._first_timer.setSingleShot(True)
         self._first_timer.timeout.connect(self._first_readout)
+        # a readout which waits until the instrument has run with the integration time it was given
+        self._settle_timer = QtCore.QTimer(self)
+        self._settle_timer.setSingleShot(True)
+        self._settle_timer.timeout.connect(self._resume_readout)
+        self._settle_until = 0.0  # time.monotonic() until which the instrument may still give images of the old time
         self._pending: Optional[tuple[float, float]] = None  # (epoch, monotonic) of the readout waiting for its spectrum
         self._started_at = 0.0
         self._run_started = 0.0  # time.monotonic() when the experiment began
@@ -388,6 +427,7 @@ class Unit(QtCore.QObject):
         if self.detector is None:
             return
         wanted = self.settings.integration_time
+        previous = self._applied_integration
         applied = set_integration_time(self.detector, wanted)
         self._requested_integration = wanted
         self._applied_integration = wanted if applied is None else applied  # (no such setting: the nominal one)
@@ -398,20 +438,58 @@ class Unit(QtCore.QObject):
                            f'the closest to {wanted:g} ms it accepts')
         else:
             logger.info(f'The integration time of {self.detector.title} is {applied:g} ms')
+        if self.ADJUSTS_AT_ONCE and applied is not None and previous is not None \
+                and abs(applied - previous) > 1e-9:
+            self._changed(previous, applied)
 
     def integration_time_now(self) -> float:
         """The integration time the instrument is set to (ms): what each measurement is made with, and what is saved"""
         return self._applied_integration if self._applied_integration is not None else self.settings.integration_time
 
+    def _changed(self, before: float, after: float):
+        """The instrument was given another time: until it has run with it the readouts wait, and it is told
+
+        A camera which is not disarmed between its readouts runs all the time: when the time changes it finishes the image
+        it was exposing (with the old time), and the next one may have been prepared with it too. A readout asks for the
+        first image which comes after it, so one made right after the change would be saved with a time it was not exposed
+        for: it waits for the time of one image of each time.
+        """
+        waits = self._runs_between_readouts()
+        if waits:
+            self._settle_until = time.monotonic() + (before + after) / 1000. + self.SETTLE_MARGIN
+        if self.state != UnitState.RUNNING:
+            return
+        text = f'{self.label}: the {self.TIME_NAME} time was changed from {before:g} to {after:g} ms'
+        left = self._settle_until - time.monotonic()
+        message = text + (f' (the readouts are made with it from {left:.1f} s on)' if waits and left > 0 else '')
+        logger.info(message)
+        self.notice.emit(message)
+        self.journal.emit(text)
+
+    def _runs_between_readouts(self) -> bool:
+        """The detector goes on making images between the readouts (a camera which is not disarmed, and free-runs): one
+        exposed with the old time may come after a change. A detector armed for each readout starts with the time it was
+        given"""
+        return not self.settings.disarm
+
     def integration_changed(self):
         """The integration time was changed in the settings
 
-        In the live view it is set on the instrument at once. During an experiment it is set before the next readout
-        (:meth:`_sync_integration`), so that the time saved with a measurement is the one it was made with.
+        In the live view it is set on the instrument at once. During an experiment it is set at once too when the unit gives
+        the time at once (:attr:`ADJUSTS_AT_ONCE`, a camera) and no readout is on its way; else it is set before the next
+        readout (:meth:`_sync_integration`), so that the time saved with a measurement is the one it was made with.
         """
         if self.state == UnitState.LIVE:
             self.apply_integration_time()
+        elif self.state == UnitState.RUNNING and self.ADJUSTS_AT_ONCE:
+            self._adjust_integration()
         self.check_disarm()
+
+    def _adjust_integration(self):
+        """Between two readouts: set the time the settings ask for now (a readout on its way is made with the time the
+        instrument has: the new one is set when its image is back)"""
+        if self._pending is None and not self._reiniting and not self.failed and self.detector is not None:
+            self._sync_integration()
 
     def _sync_integration(self):
         """Before a readout: set on the instrument the integration time the settings ask for, if it changed
@@ -569,7 +647,7 @@ class Unit(QtCore.QObject):
         self._release()
 
     def _stop_timers(self):
-        for timer in (self._timer, self._miss_timer, self._resume_timer, self._first_timer):
+        for timer in (self._timer, self._miss_timer, self._resume_timer, self._first_timer, self._settle_timer):
             timer.stop()
 
     def _detector_ready(self):
@@ -617,15 +695,35 @@ class Unit(QtCore.QObject):
             if age <= self.pending_timeout():
                 # the previous spectrum is not here yet: the integration or the transfer takes longer than the
                 # readout. Never two readouts at once: the detector may not cope with it
+                if self.CATCHES_UP:  # (made once the spectrum is back, or skipped if it never comes: _late_ticks)
+                    self._skipped_pending += 1
+                    return
                 self.n_skipped += 1
                 self._show_counters()
                 if self.n_skipped in (1, 10, 100, 1000):
                     logger.warning(f'{self.detector.title}: the readout is late ({self.n_skipped} skipped)')
                 return
         self._sync_integration()
+        if self._must_wait():
+            return
+        self._skipped_pending = 0
         self._pending = (time.time(), time.monotonic(), self.integration_time_now())
         self.detector.snap()
         self._miss_timer.start(int(self.pending_timeout() * 1000))
+
+    def _must_wait(self) -> bool:
+        """The readout is put off: the instrument was given another integration time a moment ago, and an image exposed
+        with the old one may still come (see :meth:`_changed`). It is made again, at once, when the wait is over; the next
+        one is a readout time after it, as after a missed one."""
+        if self._settle_timer.isActive():  # (a tick of the timer of the readouts, while one is already waiting)
+            return True
+        if self.state != UnitState.RUNNING or not self._runs_between_readouts():
+            return False
+        left = self._settle_until - time.monotonic()
+        if left <= 0:
+            return False
+        self._settle_timer.start(int(left * 1000) + 1)
+        return True
 
     def _poll_thermostat(self):
         """Ask the thermostat for its temperature (it answers by a signal: :meth:`_on_temperature`)"""
@@ -653,6 +751,8 @@ class Unit(QtCore.QObject):
             return
         age = time.monotonic() - pending[1]
         self._pending = None
+        self.n_skipped += self._skipped_pending  # (due while it was waited for, and it never came: they were skipped)
+        self._skipped_pending = 0
         self.n_lost += 1
         self.n_lost_in_a_row += 1
         self._series_misses += 1
@@ -667,8 +767,12 @@ class Unit(QtCore.QObject):
             else:
                 self._declare_lost()
         else:
-            self._disarm()  # (the next readout arms it again: a stalled acquisition may not stall the next one)
+            self._after_miss()
             self._resume_timer.start(self._integration_ms())
+
+    def _after_miss(self):
+        """What is done to the detector once a readout is given up (before it is asked again)"""
+        self._disarm()  # (the next readout arms it again: a stalled acquisition may not stall the next one)
 
     @logged
     def _resume_readout(self):
@@ -704,6 +808,12 @@ class Unit(QtCore.QObject):
         """Count from zero (the live view, or the experiment, begins)"""
         self.n_skipped = self.n_lost = self.n_lost_in_a_row = self.n_reinits = self._reinit_failures = 0
         self._series_misses = self._attempts = 0
+        self.n_caught_up = self._skipped_pending = 0
+        self.n_latency = self.n_late = 0
+        self.latency_sum = self.latency_max = 0.
+        self.n_split = 0
+        self.plugin_sum = self.plugin_max = self.software_sum = self.software_max = 0.
+        self._window = [time.monotonic(), 0, 0, 0., 0, None]
         if self._down_since is not None:  # (the detector is being initialized again: that is counted from now on)
             self._down_since = time.monotonic()
         self._show_counters()
@@ -806,8 +916,11 @@ class Unit(QtCore.QObject):
 
     @logged
     def _on_spectrum(self, dte: DataToExport):
+        arrived = time.time()  # (before what is done with it: showing a color image takes a while)
+        self._data_time = None
         if not self._store_data(dte):
             return
+        data_time, self._data_time = self._data_time, None
         if self.detector is not None:
             told = self.recovered(Problem.SPECTROMETER, f'{self.detector.title} delivers data again')
             if self.n_lost_in_a_row:
@@ -821,14 +934,152 @@ class Unit(QtCore.QObject):
         self.n_lost_in_a_row = self._series_misses = self._attempts = 0
         self._reinit_failures = 0
         pending, self._pending = self._pending, None
+        late = False
+        plugin_delay = None
         if pending is not None:
             self._miss_timer.stop()
             self._disarm()
+            # (a camera which keeps its newest images gives one which was made before the readout, at most as many images
+            # ago as its buffer holds: a stamp from longer before, or from after now, is not the one of this image)
+            early = trigger_mode.FIFO_SIZE * self.integration_time_now() / 1000. + 1.0
+            if data_time is not None and pending[0] - early <= data_time <= arrived + 0.05:
+                plugin_delay = data_time - pending[0]  # (when the plugin had the image, from when the readout was asked for)
+            else:
+                data_time = None
+            self._note_latency(time.monotonic() - pending[1], plugin_delay)
+            late = self._late_ticks()
         if pending is None or self.state == UnitState.IDLE:
             return  # a spectrum nobody asked for (the module was grabbing on its own): shown, not measured
         if self.state == UnitState.RUNNING and pending[1] < self._run_started:
+            self._after_readout(late)
             return  # asked for before the experiment began: shown, but it is not part of it
-        self._measure(pending[0], pending[2] if len(pending) > 2 else None)
+        self._measure(self._measurement_time(pending[0], arrived, data_time), pending[2] if len(pending) > 2 else None)
+        self._after_readout(late)
+
+    def _measurement_time(self, asked: float, arrived: float, data_time: Optional[float]) -> float:
+        """The time a measurement is dated by (epoch seconds)
+
+        A camera dates it by the time its image reached the software: the stamp of the data of the plugin, made as the image
+        came from the camera (for a camera which is triggered, or whose next image is waited for, it is the end of the
+        exposure and the transfer; for a camera which keeps its newest image, the plugin stamps the time the image came);
+        else the time the unit got it. It is never the time the readout was asked for, which can be seconds before the
+        exposure of the image ends. A spectrometer is dated by the time the readout was asked for.
+        """
+        if not self.STAMPS_IMAGE:
+            return asked
+        return data_time if data_time is not None else arrived
+
+    def _late_ticks(self) -> bool:
+        """The readouts which were due while the spectrum was on its way: skipped, or made at once when the unit catches up
+
+        Returns
+        -------
+        bool
+            True if the next readout is to be asked for at once (:meth:`_catch_up`)
+        """
+        ticks, self._skipped_pending = self._skipped_pending, 0
+        if not ticks:
+            return False
+        if self.CATCHES_UP and self.state == UnitState.RUNNING:
+            self.n_caught_up += ticks
+            return True
+        self.n_skipped += ticks
+        self._show_counters()
+        if self.detector is not None and self.n_skipped in (1, 10, 100, 1000):
+            logger.warning(f'{self.detector.title}: the readout is late ({self.n_skipped} skipped)')
+        return False
+
+    def _after_readout(self, late: bool = False):
+        """No readout is on its way any more: a time asked for during the readout can be given to the instrument, and a
+        readout which was due meanwhile is made (`late`)"""
+        if self.ADJUSTS_AT_ONCE and self.state == UnitState.RUNNING:
+            self._adjust_integration()
+        if late:
+            self._catch_up()
+
+    def _catch_up(self):
+        """The spectrum came after the next readout was due: ask for the next one now, not at the readout time after the
+        previous one (it would have been skipped, and the one after would have been made twice the readout time later)
+
+        The readout time counts again from this readout: two of them are never closer to each other than the time the spectrum
+        took, which is more than the readout time. A detector which is disarmed between its readouts is armed again after
+        :attr:`DISARM_GUARD`, not at once.
+        """
+        if self.failed or self._reiniting or self.detector is None:
+            return
+        self._timer.stop()  # (started again by _resume_readout: a tick must not make a second readout meanwhile)
+        self._resume_timer.start(int(self.DISARM_GUARD * 1000) if self.settings.disarm else 0)
+
+    def _note_latency(self, latency: float, plugin: Optional[float] = None):
+        """How long the spectrum (image) took to come back after the readout was asked for
+
+        One which takes more than the readout time makes the readout which comes in the meantime be skipped (the previous one
+        is not over): that is what the *readouts missed* of the status are made of, and this says how late it was (the file
+        has the times of the readouts only). Said at the 1st, 10th, 100th... one, the end of the experiment sums it up.
+        """
+        self.n_latency += 1
+        self.latency_sum += latency
+        self.latency_max = max(self.latency_max, latency)
+        parts = None
+        if plugin is not None:  # (how long the plugin took to have the image, and how long the software took to get it then)
+            software = max(latency - plugin, 0.)
+            parts = (plugin, software)
+            self.n_split += 1
+            self.plugin_sum += plugin
+            self.software_sum += software
+            self.plugin_max = max(self.plugin_max, plugin)
+            self.software_max = max(self.software_max, software)
+        late = latency - self.settings.readout_time
+        self._window[1] += 1
+        if late > 0 and self.state != UnitState.IDLE and self.detector is not None:
+            self._window[2] += 1
+            if latency > self._window[3]:
+                self._window[3], self._window[5] = latency, parts
+            self.n_late += 1
+            if self.n_late in (1, 10, 100, 1000, 10000):
+                then = ('the next readout is asked for as soon as it is back' if self.CATCHES_UP
+                        and self.state == UnitState.RUNNING else 'the readout due in the meantime is skipped')
+                where = f' ({self._delay_words(*parts)})' if parts else ''
+                logger.warning(f'{self.detector.title}: the {self.DATA} of a readout came back after {latency:.1f} s'
+                               f'{where}, {late:.1f} s more than the readout time ({self.settings.readout_time:g} s): '
+                               f'{then} ({self.n_late} {self.DATAS} that late so far)')
+        self._report_latency()
+
+    @staticmethod
+    def _delay_words(plugin: float, software: float) -> str:
+        """Where the delay of an image was: in the plugin (from the readout asked for to the image), then in the software
+        (from the image to the unit). A negative plugin delay is an image which was made before the readout was asked for (a
+        camera which keeps its newest images)"""
+        if plugin >= 0:
+            return f'the plugin had the image {plugin:.1f} s after the readout was asked for, the software got it {software:.1f} s later'
+        return (f'the image had been made {-plugin:.1f} s before the readout was asked for, the software got it '
+                f'{software:.1f} s after it was made')
+
+    def _report_latency(self):
+        """Write in the file (see :attr:`JOURNALS_LATENCY`) how late the images were in the window which is over"""
+        started, images, late, longest, caught, parts = self._window
+        now = time.monotonic()
+        if not self.JOURNALS_LATENCY or self.state != UnitState.RUNNING or now - started < self.LATENCY_REPORT_EVERY:
+            return
+        self._window = [now, 0, 0, 0., self.n_caught_up, None]
+        if late:
+            where = f' (the longest: {self._delay_words(*parts)})' if parts else ''
+            self.journal.emit(f'{self.label}: in the last {format_duration(now - started)}, {late} of {images} {self.DATAS} '
+                              f'came back later than the readout time ({self.settings.readout_time:g} s), up to '
+                              f'{longest:.1f} s after the readout{where}, and {self.n_caught_up - int(caught)} readouts were '
+                              f'made as soon as the image was back')
+
+    def latency_summary(self) -> str:
+        """What the readouts of the experiment took (for the log): empty if none came back"""
+        if not self.n_latency:
+            return ''
+        split = (f', stamped by the plugin {self.plugin_sum / self.n_split:+.2f} s from the readout on average '
+                 f'({self.plugin_max:+.1f} s at most) and got by the software {self.software_sum / self.n_split:.2f} s after '
+                 f'their stamp ({self.software_max:.1f} s at most)' if self.n_split else '')
+        return (f'{self.label}: {self.n_latency} {self.DATAS} came back, after {self.latency_sum / self.n_latency:.2f} s on '
+                f'average and {self.latency_max:.1f} s at most{split} (readout time {self.settings.readout_time:g} s): '
+                f'{self.n_late} later than it ({self.n_caught_up} readouts made as soon as the image was back), '
+                f'{self.n_skipped} readouts skipped in all, {self.n_lost} lost')
 
     def _store_data(self, dte: DataToExport) -> bool:
         """Keep what the detector delivered (False if there is nothing usable in it)"""
@@ -1028,6 +1279,10 @@ class Unit(QtCore.QObject):
         """The experiment is over: back to the live view"""
         if self.state == UnitState.RUNNING:
             self.state = UnitState.LIVE
+            summary = self.latency_summary()
+            if summary:
+                logger.info(summary)
+        self._settle_timer.stop()  # (a readout which was put off is not made after the experiment)
         self.runner = None
         self.ramp_state = None
         self.hold_target = None
@@ -1302,6 +1557,8 @@ class Unit(QtCore.QObject):
             text += f', measured {self.temperature.value:.4g} {self.units}'
         if self.n_missed:
             text += f', {self.n_missed} readouts missed'
+        if self.n_caught_up:
+            text += f', {self.n_caught_up} made late (the image came after the next readout was due)'
         return text.strip()
 
 
@@ -1325,7 +1582,44 @@ class CameraUnit(Unit):
     _n_channels = 0  # (how many channels the last image had: 0 before the first one)
     bayer_offset: Optional[tuple] = None  # (row, column) of a red pixel if the driver gives the Bayer mosaic of a color sensor
     _driver = None
-    PENDING_MIN = 30.0  # (the plugin of a camera gives up on its own when a frame does not come in 20 s)
+    #: An image which did not come is given up after PENDING_FACTOR times the time of the exposure (as many times as the module
+    #: averages), at least PENDING_MIN seconds: a camera which stalls is asked again after 5 exposures, not after 30 s
+    PENDING_MIN = 10.0
+    PENDING_FACTOR = 5.0
+    ADJUSTS_AT_ONCE = True  # (the exposure time can be changed during an experiment: see integration_changed)
+    CATCHES_UP = True  # (an image which comes after the next readout was due: that readout is made at once, see _catch_up)
+    JOURNALS_LATENCY = True  # (how late the images were is written in the file, every hour, when some were late)
+    STAMPS_IMAGE = True  # (a measurement is dated by the time its image reached the software: _measurement_time)
+
+    def pending_timeout(self) -> float:
+        """The time (s) after which a readout whose image did not come is given up: :attr:`PENDING_FACTOR` times its exposure
+        (a spectrometer: twice the integration time and 10 s more), at least :attr:`PENDING_MIN`"""
+        return max(self.PENDING_MIN, self.PENDING_FACTOR * self.acquisition_time())
+
+    def _after_miss(self):
+        """The camera is stopped, whether it is disarmed between its readouts or not
+
+        The plugin of a camera waits for an image for 20 s (and may be a long time into it when the readout is given up, now that
+        it is after a few exposures): a readout asked for again would be queued behind that wait and fail. Stopping the
+        acquisition makes the plugin let go at once, and the next readout arms the camera again.
+        """
+        if self.detector is None or self.state == UnitState.IDLE:
+            return
+        try:
+            self.detector.stop()
+        except Exception:
+            logger.exception(f'{self.detector.title} could not be stopped')
+
+    def _runs_between_readouts(self) -> bool:
+        """Not a camera which is disarmed, nor one in the trigger mode (it makes one image for each readout, see
+        :mod:`.trigger_mode`)"""
+        return super()._runs_between_readouts() and not trigger_mode_of(self.detector)
+
+    def disarm_warning(self) -> Optional[str]:
+        if self.settings.disarm and trigger_mode_of(self.detector):
+            return (f'{self.label}: it is not needed to disarm it between the readouts in the trigger mode: the camera is '
+                    f'idle between the triggers, and it is armed again for each readout. Untick it')
+        return super().disarm_warning()
     WHAT = 'camera'
     DATA = 'image'
     DATAS = 'images'
@@ -1399,6 +1693,8 @@ class CameraUnit(Unit):
         if found is None:
             return False
         dwa, image = found
+        stamp = getattr(dwa, 'timestamp', None)  # (made by the plugin as the image came: before the viewers showed it)
+        self._data_time = float(stamp) if isinstance(stamp, (int, float)) else None
         shown = None
         if self.bayer_offset is not None and len(dwa.data) == 1:  # (the mosaic: colors only on request)
             rgb = bayer.rgb_data(dwa, self.bayer_offset, self.settings.bayer_interpolate) if (

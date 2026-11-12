@@ -33,8 +33,10 @@ from pymodaq_plugins_thermospectro.configurations import Configuration
 
 #: the backends of python-seabreeze, in the order they are tried (the first is the default of the Seabreeze plugin)
 BACKENDS = ('pyseabreeze', 'cseabreeze')
+#: the Thorlabs cameras with a trigger mode (plugin of this package: the same cameras as Thorlabs_TSI, one image per trigger)
+TSI_TRIGGER = 'Thorlabs_TSI_Trigger'
 #: the plugins of the cameras which are recognized (what pylablib lists), the first one is the default
-CAMERA_PLUGINS = ('Thorlabs_TSI', 'UC480')
+CAMERA_PLUGINS = ('Thorlabs_TSI', 'UC480', TSI_TRIGGER)
 SPECTROMETER_PLUGIN = 'Seabreeze'
 THERMOSTAT_PLUGIN = 'QNW_TC'  # the only thermal controller which is recognized
 MOCK = 'Mock'
@@ -183,7 +185,7 @@ def _camera_of(plugin: str, item: Any, notes: list) -> Camera:
         if not serial and isinstance(item, (tuple, list)) and item:
             serial = _text(item[0])
         model = _text(getattr(item, 'model', None))
-    family = 'Thorlabs scientific camera' if plugin == 'Thorlabs_TSI' else 'camera'
+    family = 'Thorlabs scientific camera' if plugin in ('Thorlabs_TSI', TSI_TRIGGER) else 'camera'
     label = f'{model} {serial}'.strip() if model else f'{family} {serial}'
     if getattr(item, 'in_use', False):
         label += ' (in use by another program)'
@@ -212,7 +214,9 @@ def detect_cameras(notes: Optional[list] = None, tsi: Optional[Callable[[], Sequ
     """
     notes = [] if notes is None else notes
     cameras, problems = [], []
-    for family_plugin, family, lister in (('Thorlabs_TSI', 'Thorlabs scientific cameras', tsi or _list_thorlabs_tsi),
+    # (the cameras of Thorlabs_TSI_Trigger are the ones of Thorlabs_TSI: what is asked for names the plugin they are given to)
+    tsi_plugin = TSI_TRIGGER if plugin == TSI_TRIGGER else 'Thorlabs_TSI'
+    for family_plugin, family, lister in ((tsi_plugin, 'Thorlabs scientific cameras', tsi or _list_thorlabs_tsi),
                                           ('UC480', 'uc480 / uEye cameras', uc480 or _list_uc480)):
         if plugin in CAMERA_PLUGINS and plugin != family_plugin:
             continue

@@ -671,6 +671,60 @@ def roi_lines(unit: UnitData, files: dict[str, str]) -> list[str]:
     return lines
 
 
+#: Two readouts which are farther from each other than this many readout times have readouts missing in between
+GAP_FACTOR = 1.5
+
+
+def readout_gaps(times: np.ndarray, readout: float, slack: float = 0.) -> Optional[tuple[int, int, float]]:
+    """The readouts an experiment did not make, from the times of the ones it made
+
+    Returns
+    -------
+    (missing, expected, longest) or None
+        How many readouts are missing, how many there should have been (the missing ones and the ones which were made) and the
+        longest time between two of them (s); None if it cannot be said (no readout time, or less than two readouts). A gap is
+        counted when it is more than :data:`GAP_FACTOR` readout times (and `slack`): a readout which was skipped (its image
+        came after the next one was due), lost, or put off. A camera which is asked again after a lost image makes the gap
+        irregular. The times of the images of a camera which runs are not on the grid of the readouts: an image comes up to
+        one exposure after the readout, so a gap may be that much longer (`slack`, s) without any readout missing.
+    """
+    times = np.sort(np.asarray(times, dtype=float))
+    times = times[np.isfinite(times)]
+    if readout <= 0 or len(times) < 2:
+        return None
+    gaps = np.diff(times)
+    missing = int(np.sum(np.maximum(np.rint(gaps / readout) - 1, 0)[gaps > GAP_FACTOR * readout + slack]))
+    return missing, len(times) + missing, float(gaps.max())
+
+
+def readout_line(unit: UnitData) -> Optional[str]:
+    """``readouts: 2554 made, 119 missing...`` for a unit, None if it cannot be said"""
+    series = next((unit.series[kind] for kind in ('ROIs', 'Integration', 'Temperature') if kind in unit.series
+                   and len(unit.series[kind]) > 1), None)
+    try:
+        readout = float(unit.attr('readout_time_s', 0) or 0)
+    except (TypeError, ValueError):
+        return None
+    slack = 0.
+    if unit.is_camera and unit.attr('time_stamp', '') == 'image':  # (the time of an image: up to an exposure after the readout)
+        exposures = unit.series.get('Integration')
+        try:
+            slack = float(np.nanmax(exposures.column(0))) / 1000. if exposures is not None and len(exposures) else \
+                float(unit.attr('integration_time_ms', 0) or 0) / 1000.
+        except (TypeError, ValueError):
+            slack = 0.
+    found = readout_gaps(series.time[:len(series)], readout, slack) if series is not None else None
+    if found is None:
+        return None
+    missing, expected, longest = found
+    made = expected - missing
+    if not missing:
+        return f'  readouts: {made} made, none missing (the longest time between two is {longest:.4g} s, readout time {readout:g} s)'
+    return (f'  readouts: {made} made, {missing} missing of {expected} ({100. * missing / expected:.1f} %): more than '
+            f'{GAP_FACTOR:g} readout times ({readout:g} s) between two of them (the image came late, or was lost), the longest '
+            f'time is {longest:.4g} s')
+
+
 def unit_lines(unit: UnitData, files: dict[str, str]) -> list[str]:
     """The lines of the report about a unit: its instruments, its times, its units, what was saved"""
     module = unit.attr('camera' if unit.is_camera else 'spectrometer', '')
@@ -688,6 +742,10 @@ def unit_lines(unit: UnitData, files: dict[str, str]) -> list[str]:
         lines.append(f'  {what} time: {float(unit.attr("integration_time_ms")):g} ms (at the start)')
     if unit.attr('readout_time_s', ''):
         lines.append(f'  readout time: {float(unit.attr("readout_time_s")):g} s')
+    if unit.is_camera:
+        lines.append('  time of a readout: when its image reached the software (the stamp the plugin made as it got it from '
+                     'the camera)' if unit.attr('time_stamp', '') == 'image' else
+                     '  time of a readout: when it was asked for (a file written before the images were dated by their arrival)')
     if unit.intensity_units:
         lines.append(f'  intensity unit: {unit.intensity_units}')
     if 'ROIs' in unit.series or unit.crops:
@@ -710,6 +768,9 @@ def unit_lines(unit: UnitData, files: dict[str, str]) -> list[str]:
         saved.append(f'{len(crop)} crops')
     if saved:
         lines.append('  saved: ' + ', '.join(saved))
+    line = readout_line(unit)
+    if line:
+        lines.append(line)
     return lines
 
 

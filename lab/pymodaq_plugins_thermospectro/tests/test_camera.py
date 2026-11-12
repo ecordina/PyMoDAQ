@@ -302,12 +302,60 @@ class TestLostReadouts:
     def quick(bench, timeout=0.2):
         bench.unit.pending_timeout = lambda: timeout  # (the real one is 30 s at least)
 
-    def test_an_image_is_waited_for_much_less_than_a_spectrum(self, bench):
-        assert bench.unit.pending_timeout() == pytest.approx(30., abs=0.1)
-        bench.settings.child('integration_time').setValue(20000.)
-        bench.settings.child('readout_time').setValue(60.)
+    def test_an_image_is_given_up_after_five_exposures_at_least_ten_seconds(self, bench):
+        assert bench.unit.pending_timeout() == pytest.approx(10.)  # (an exposure of 20 ms: the least)
+        bench.settings.child('integration_time').setValue(4000.)
+        bench.settings.child('readout_time').setValue(10.)
 
-        assert bench.unit.pending_timeout() == pytest.approx(2. * 20. + 30.)
+        assert bench.unit.pending_timeout() == pytest.approx(20.)  # (5 x 4 s, not 30 s or more)
+
+        bench.settings.child('integration_time').setValue(1000.)
+
+        assert bench.unit.pending_timeout() == pytest.approx(10.)  # (5 x 1 s is less than the least)
+
+        bench.settings.child('integration_time').setValue(20000.)
+        bench.settings.child('readout_time').setValue(120.)
+
+        assert bench.unit.pending_timeout() == pytest.approx(100.)
+
+    def test_a_spectrometer_is_still_waited_for_twice_its_integration_and_ten_seconds_more(self):
+        from pymodaq_plugins_thermospectro.unit import Unit
+        assert Unit.PENDING_MIN == 10. and Unit.pending_timeout is not CameraUnit.pending_timeout
+
+    def test_the_images_to_average_are_waited_for_together(self, bench):
+        bench.settings.child('integration_time').setValue(4000.)
+        bench.settings.child('readout_time').setValue(60.)
+        bench.unit.n_averages = lambda: 5
+
+        assert bench.unit.pending_timeout() == pytest.approx(100.)  # (5 x 4 s of exposure: 5 x 20 s)
+
+    def test_a_camera_which_gave_nothing_is_stopped_whether_it_is_disarmed_between_readouts_or_not(self, bench):
+        bench.unit.start_live(time.time())
+        bench.wait_for(1)
+        assert not bench.settings.child('disarm').value()
+        stops = bench.camera.stops
+        bench.unit._pending = (time.time() - 100., time.monotonic() - 100., 20.)
+
+        bench.unit._on_miss()
+
+        assert bench.camera.stops == stops + 1  # (the plugin which waits for an image lets go: the next readout arms it)
+        assert bench.unit.n_lost == 1
+        bench.unit._release()
+
+    def test_a_spectrometer_is_stopped_only_when_it_is_disarmed(self):
+        from pymodaq_plugins_thermospectro.unit import Unit
+        assert Unit._after_miss is not CameraUnit._after_miss
+
+    def test_a_stall_is_given_up_after_a_few_exposures_and_the_next_readout_works_without_a_restart(self, bench):
+        bench.unit.PENDING_MIN = 0.3  # (instead of 10 s: the factor of the exposure of 20 ms is 0.1 s)
+        bench.camera.drop_next = 1  # (the first readout is never answered)
+
+        bench.unit.start_live(time.time())
+        bench.wait_for(1, timeout=10000)
+        bench.unit._release()
+
+        assert bench.unit.n_lost == 1 and bench.unit.n_reinits == 0  # (one miss is not enough to restart the camera)
+        assert bench.camera.stops >= 1 and bench.camera.inits == 0
 
     def test_two_readouts_lost_in_a_row_restart_the_camera(self, bench):
         self.quick(bench)

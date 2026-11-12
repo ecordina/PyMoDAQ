@@ -269,6 +269,7 @@ class TestPyMoDAQFindsThePlugin:
         names = [info.name for info in pkgutil.iter_modules([str(folder.path.parent)])]
 
         assert 'daq_2Dviewer_BayerMock' in names  # (what pymodaq.utils.daq_utils does to list the 2D detectors)
+        assert 'daq_2Dviewer_Thorlabs_TSI_Trigger' in names  # (the Thorlabs camera with a trigger mode)
 
 
 class TestTheLedOfTheCamera:

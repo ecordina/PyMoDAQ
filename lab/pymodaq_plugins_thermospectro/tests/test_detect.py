@@ -743,6 +743,32 @@ class TestPlan:
         assert (spec.plugin, spec.recognized) == ('UC480', False)  # (the Thorlabs one is another camera)
         assert 'Camera1: no camera was recognized' in spec.instruction
 
+    def test_the_thorlabs_cameras_are_the_ones_of_the_trigger_plugin_too(self):
+        """The plugin of this package which triggers the camera for each image drives the same cameras as Thorlabs_TSI"""
+        found = detect_cameras([], lambda: ['08365'], lambda: [TsiRecord(1, 'UI-1220', '4100000001')],
+                               plugin='Thorlabs_TSI_Trigger')
+
+        assert found == [Camera('Thorlabs_TSI_Trigger', '08365', 'Thorlabs scientific camera 08365')]  # (not the uc480 one)
+
+    def test_without_a_choice_the_thorlabs_cameras_are_of_the_stock_plugin(self):
+        found = detect_cameras([], lambda: ['08365'], lambda: [])
+
+        assert [c.plugin for c in found] == ['Thorlabs_TSI']
+
+    def test_the_trigger_plugin_of_the_camera_can_be_chosen(self):
+        found = Detections(cameras=[Camera('Thorlabs_TSI_Trigger', '08365', 'Zelux')])
+
+        spec = plan(CONFIGURATIONS['camera'], found, Options(camera_plugin='Thorlabs_TSI_Trigger')).module('Camera1')
+
+        assert (spec.plugin, spec.recognized, spec.settings) == ('Thorlabs_TSI_Trigger', True,
+                                                                 {'serial': '08365', 'index': 0})
+
+    def test_the_trigger_plugin_which_found_no_camera_says_so_and_is_still_the_plugin(self):
+        spec = plan(CONFIGURATIONS['camera'], Detections(), Options(camera_plugin='Thorlabs_TSI_Trigger')).module('Camera1')
+
+        assert (spec.plugin, spec.recognized) == ('Thorlabs_TSI_Trigger', False)
+        assert 'cannot be recognized' not in spec.instruction and 'no camera was recognized' in spec.instruction
+
     def test_a_plugin_of_the_camera_which_cannot_be_recognized(self):
         spec = plan(CONFIGURATIONS['camera'], Detections(cameras=CAMERAS), Options(camera_plugin='Basler')).module(
             'Camera1')

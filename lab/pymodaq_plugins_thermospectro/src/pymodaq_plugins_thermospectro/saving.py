@@ -77,6 +77,8 @@ ROIS = 'ROIs'
 TEMPERATURE = 'Temperature'
 PROGRAM = 'Program'
 INTEGRATION = 'Integration'
+#: What ``time_stamp`` says when the time of a measurement is the one its image reached the software
+TIME_OF_IMAGE = 'image'
 CROP = 'Crop'  # followed by the number of the crop: Crop1, Crop2...
 
 
@@ -280,6 +282,10 @@ class UnitRecording:
     n_channels: int
         How many channels the images of a camera have (the ROIs which give a number are measured on some of them, see
         :class:`~.camera.RectRoi`): saved as an attribute of their group
+    time_stamp: str
+        What the time of a measurement is: ``image`` (when the image reached the software, a camera) or empty (when the
+        readout was asked for, a spectrometer, and the files written before cameras were dated by their images): saved as an
+        attribute of the groups of the unit
     camera_info: str
         What the camera said about itself when the experiment started (json, see :mod:`.camera_info`): its model, the
         size of its pixels, its binning...; saved as an attribute of the groups of the camera, empty if it said nothing
@@ -309,6 +315,7 @@ class UnitRecording:
     spectrum_per_integration: bool = False
     n_channels: int = 1
     camera_info: str = ''
+    time_stamp: str = ''
 
     @classmethod
     def from_unit(cls, unit) -> 'UnitRecording':
@@ -335,7 +342,8 @@ class UnitRecording:
                    integration=settings.record_integration, intensity_units=settings.intensity_units,
                    value_units=settings.value_units, per_integration=settings.per_integration,
                    spectrum_units=settings.spectrum_units, spectrum_per_integration=settings.spectrum_per_integration,
-                   n_channels=getattr(unit, 'n_channels', 1), camera_info=camera_info_of(unit))
+                   n_channels=getattr(unit, 'n_channels', 1), camera_info=camera_info_of(unit),
+                   time_stamp=TIME_OF_IMAGE if getattr(unit, 'STAMPS_IMAGE', False) else '')
 
     @staticmethod
     def _check_crops(unit, crops: list):
@@ -641,6 +649,8 @@ class ThermoSpectroSaver(ExtensionSaver):
                   'integration_time_ms': recording.integration_time, 'readout_time_s': recording.readout_time}
         if recording.camera_info:
             common['camera_info'] = recording.camera_info
+        if recording.time_stamp:
+            common['time_stamp'] = recording.time_stamp
         crops = {f'{CROP}{index}': roi for index, roi in enumerate(recording.crops, 1)}
         for what in (SPECTRUM, IMAGE, ROIS, *crops, INTEGRATION, TEMPERATURE, PROGRAM):
             node = self.current_nodes.get(group_title(number, what))

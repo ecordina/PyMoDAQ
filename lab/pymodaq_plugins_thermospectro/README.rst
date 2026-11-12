@@ -113,7 +113,13 @@ while an experiment runs**: the field of the settings stays usable, the instrume
 readout, and each readout is saved with the time it was made with. A time which is not shorter than the readout time (as many
 times as the module averages) cannot be followed during an experiment: it is refused, told, and the setting goes back to what
 the instrument is set to. The instrument may accept only the closest time it can (its limits): the saved time is the one it
-accepted.
+accepted. A **camera** is given the new exposure time **at once**, between two readouts (a readout on its way is made with the old
+time: the new one is set when its image is back), the change is told in the status bar and written in the file (``[auto]``), and
+the readout which follows **waits until the camera has run with it**: a camera which is not disarmed between its readouts runs all
+the time, finishes the image it was exposing with the old time, and a readout takes the first image which comes after it, so one
+made right away would be saved with a time it was not exposed for. The wait is the old exposure plus the new one plus 0.5 s (a camera
+armed for each readout, see *Disarm between readouts*, starts with the time it was given and does not wait); the readouts which fall
+in it are not missed ones, they are made when it is over.
 
 **Per ms of integration** (a box under the readout time): the value of each ROI, of the spectrometers and the aggregated ROIs
 of the camera, is divided by the integration (exposure) time, in ms, of its readout, so that the values (the curves and the
@@ -169,10 +175,12 @@ gradually; when no ramp is going on (the controllers are held, or the ramps are 
 asks whether to close the log.
 
 The **first measurement of an experiment** is taken one integration time after it begins (not at the next readout time), then one
-readout time after each measurement which came back. A **spectrometer or a camera** which stops answering (for a camera, the readout
-times out in the Thorlabs driver) is given up on after ``max(10 s, 2 x integration x averages + 10 s)`` (30 s instead of 10 s for a
-camera) and **asked again one integration time later**, not at the next readout time (the readouts may then be closer to each other,
-or farther, than the readout time: data are wanted more than a regular rhythm). When as many readouts in a row as set in **Restart
+readout time after each measurement which came back. A **spectrometer** which stops answering is given up on after ``max(10 s, 2 x
+integration x averages + 10 s)``, a **camera** after ``max(10 s, 5 x exposure x averages)`` (an exposure of 4 s: 20 s), and either is
+**asked again one integration time later**, not at the next readout time (the readouts may then be closer to each other, or farther,
+than the readout time: data are wanted more than a regular rhythm). The camera is **stopped first**, whether it is disarmed between its
+readouts or not: the plugin of a camera waits for an image for 20 s, and a readout asked for again would be queued behind that wait; the
+next readout arms the camera again. When as many readouts in a row as set in **Restart
 after missed** (2 by default; 1 restarts at the first missed readout, 0 never restarts) are missed, the instrument is **closed and
 initialized again** by itself and a readout is asked for one integration time after it is (an initialization which does not work is
 tried again after 30 s, 1 min, 2 min, then 5 min). After a readout which came back the next one is a readout time later.
@@ -203,6 +211,63 @@ experiment. It is **not advised when the readout time is less than 5 s longer th
 status bar and in the log. A missed readout also disarms the instrument, so that the next try arms it again. How an
 instrument is armed and stopped is up to its plugin (for a Thorlabs camera: ``start_acquisition`` when a readout is
 asked, ``clear_acquisition`` when it is stopped): check the first images of an instrument that you disarm.
+
+**A camera between its readouts.** The camera does not know the readout time: it is the rhythm of this extension. A Thorlabs camera
+(CS165, manual ITN004347-D02, section 4.2) is by default in *Frames per Trigger = continuous* and the plugin ``Thorlabs_TSI`` of PyMoDAQ
+does not change it: once started, the camera exposes and reads out one image after the other (the exposure of the next one overlaps the
+readout of the previous one) until it is stopped, as fast as the exposure, the ROI and the USB allow, whether or not the images are
+taken. The plugin keeps the last few in memory and a readout takes **the first image which comes after it was asked for**: a camera
+running all the time makes about 3 images per second with an exposure of 300 ms, so about 400 of them to give one when the readout time
+is 2 min, and the others are thrown away. There are four ways to ask a camera for an image every so often:
+
+* **Free-running, next image** (the default, the plugin ``Thorlabs_TSI``): as above. The readout waits for the next image: up to one
+  exposure (half of it on average), then the transfer and the display; an image which comes late (more than the readout time after
+  the readout) makes the next readout late too.
+* **Disarm between readouts** (the box of the unit): the acquisition is stopped after each readout and armed again for the next one, so
+  that the camera runs for the time of one image only. It is what to tick when the readout time is much longer than the exposure; but
+  the camera is armed and stopped for every readout, which the driver (pylablib) says may fail 0.1 to 1 % of the times.
+* **One frame per trigger**, a mode of the plugin ``Thorlabs_TSI_Trigger`` (see below): the camera is armed once and idle, and each
+  readout sends a software trigger which makes one exposure. It does not run in between, nothing is armed or stopped for each readout,
+  and an exposure time which is changed is the one of the next image. For readouts far apart.
+* **Continuous, newest image**, the other mode of ``Thorlabs_TSI_Trigger``: the camera runs and its images are **put in a buffer of the
+  last five as they arrive, each with the time it arrived**; a readout takes the newest one nobody took yet, **at once**, instead of
+  waiting for a future one. For readouts a few seconds apart (a readout time close to the exposure), where the camera has to run.
+
+**The plugin Thorlabs_TSI_Trigger** is the plugin ``Thorlabs_TSI`` (the same settings: ROI, binning, exposure, color conversion) with one
+more, **Acquisition**: *One frame per trigger* (the default), *Continuous, newest image* or *Continuous, next image* (what
+``Thorlabs_TSI`` does). Choose it as the plugin of the camera in the Dashboard, or with ``--camera-plugin Thorlabs_TSI_Trigger`` (the
+cameras are the ones of ``Thorlabs_TSI``). It needs ``pymodaq_plugins_thorlabs`` and ``pylablib`` (``python lab/install_lab.py
+--camera``) and is not listed without them. In the trigger mode leave *Disarm between readouts* unticked (it would arm the camera again
+for each readout, and a warning says so), and a change of the exposure time during an experiment makes no readout wait. The image is
+waited for after the trigger (or, in the newest image mode, for the first one to come): at most twice the exposure plus 10 s, after
+which the readout is a missed one (and the camera is initialized again as for any other). The mode is the one of the plugin: this package
+never changes it. In the trigger mode an image always takes the whole exposure to come back (the exposure begins with the readout): it is
+for readouts far apart. With a readout time only a few seconds longer than the exposure use the newest image: nothing waits for a future
+image, the image is already there (it is up to one exposure old, and its time says so). Not tested on a camera yet: check the first
+images in the viewer of the module before a long experiment.
+
+**The time of an image.** The time recorded for each readout of a camera is **the time its image reached the software**, not the time
+it was asked for: the plugin dates the data it emits as the image comes from the camera (with the newest image mode, as the image came
+into the buffer, even if it was taken out later), and the extension records that time. If the data carry no usable date (a stamp from
+long before the readout, or from the future) it is the time the extension got them. A spectrometer is still dated by the time the
+readout was asked for. The curves, the csv and the tif files all use it; the file says it (``time_stamp`` attribute of the groups of the
+camera: ``image``, and ``experiment.txt``); an older file has none and its times are the ones the readouts were asked for. The images
+are not on the grid of the readout time any more: with a camera which runs, an image comes up to one exposure after its readout (and
+``lab_export`` counts a missing readout only when the gap is more than 1.5 readout times plus the longest exposure).
+
+**Images which come late.** A readout which is still waiting for its image when the next one is due is not made twice: for a **camera**
+the readout which was due is **made as soon as the image is back**, and the readout time counts again from there (the readouts are then
+never closer to each other than the time the image took, which is more than the readout time; the status bar says how many were made
+late). An image which never comes is a missed readout (and the readouts due meanwhile are skipped ones, see above). The log says how
+late an image was, in two parts (how long the plugin took to have the image after the readout was asked for, and how long the
+software took to get it then: the camera or the computer), at the first one which came after the readout time, the 10th, the 100th...,
+and sums it up when the experiment ends (images which came back, the average time, the longest, how many were later than the readout
+time, how many readouts were made late, skipped and lost). **Every hour** of an experiment in which some images were late, the file says it too, as an observation marked
+``[auto]`` (how many of the images of that hour came back later than the readout time, the longest and which part of it was the
+plugin's and which the software's, how many readouts were made at once): it is there when the log is not, or when the program did not end properly. Nothing is written for an hour without a late
+image. A camera which is disarmed between its readouts is armed again one second after the image, not at once. A
+spectrometer skips the readout as before. The times of the readouts are in the file, and ``lab_export`` says how many are missing (a gap
+of more than 1.5 readout times).
 
 **Color camera, raw counts.** For a camera with a color (Bayer) sensor the extension asks the driver for the raw counts of the ADC (no white balance, no color matrix, nothing clipped) and gives the driver back its own conversion when the live view stops. Two settings of the camera unit say what the mosaic becomes: *Show the Bayer image as* (default: RGB) and *Record the Bayer image as* (default: Bayer, the 1 channel mosaic exactly as the sensor measured it). RGB means red, green and blue interpolated from the mosaic (bilinear: each color a pixel did not measure is the mean of the pixels of that color among its 8 neighbours, the measured pixels keep their count, float); *Interpolate the colors* unticked gives the RGB image without any interpolation instead: each channel only holds the pixels which measured its color, and is nan elsewhere (the ROIs are measured on the pixels which are there). The ROIs are measured on what is shown. The file says (attribute ``camera_info``) that the counts are raw, the Bayer phase, the format of the images and which interpolation was made in the recorded images and in the image the ROIs were measured on (``interpolation``, ``roi_interpolation``: ``none`` or the description of the bilinear one). A monochrome camera is left as it is.
 
