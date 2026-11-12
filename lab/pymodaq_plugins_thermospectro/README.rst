@@ -394,7 +394,21 @@ The names of the new files start with the one of the h5 file:
   with a lens or a microscope the size of a pixel *on the sample* is smaller, so the tif says it is the sensor plane until you
   give the optics: ``--magnification 10`` (the sensor pitch divided by it) or ``--pixel-size 0.325`` (um on the sample,
   measured with a ruler, binning included; it wins). A file written before this, or by a camera which says nothing (a Mock
-  one), has no size: the tif is in pixels, and ``--pixel-size`` calibrates it;
+  one), has no size: the tif is in pixels, and ``--pixel-size`` calibrates it.
+  **The colors of a color camera.** Its images are recorded as the Bayer mosaic (one channel of raw counts) unless the extension
+  was told to record the colors. The tif then holds the colors **reconstructed from the mosaic**: by default a **bilinear
+  interpolation** (red, green and blue channels, each color a pixel did not measure being the mean of the pixels of that color
+  around it, the pixels which measured a color keeping their count), or what ``--demosaic`` asks for: ``raw`` (the mosaic as
+  the sensor measured it, one channel, nothing made), ``nearest`` (copy of the pixel of the color in the block of 2 x 2),
+  ``cubic`` (Catmull-Rom), ``malvar`` (gradient-corrected linear interpolation of Malvar, He and Cutler, sharper edges than the
+  bilinear) and ``superpixel`` (half the size: the red, the mean of the two greens and the blue of each block of 2 x 2, nothing
+  is interpolated; the pixel of the tif is then twice the size). There is no white balance and no color matrix whatever the
+  method, and the counts stay integers (rounded, never below 0; ``--demosaic-float`` writes 32 bits floats instead: twice the
+  size). The pattern of the filters is the phase the camera told, moved by an odd start of the window of the sensor, and for a
+  crop by its place in the image (the pixels around a crop are not recorded: its edges are interpolated from less). The
+  description of the tif says which method was used. Images the extension recorded as colors, or of a monochrome camera, are
+  written as they are (``--demosaic`` is ignored, and says so), and so are binned images (the colors of a binned mosaic
+  cannot be made);
 * **the observations and the protocol**: ``..._experiment.txt`` is a text with the title, the sample, the operator, the protocol,
   the observations noted while the experiment ran (with the time since the start and the clock time), the instruments, the ROIs
   (and what each one gives), the integration times, the units and the list of the files which were written; the observations
@@ -410,7 +424,8 @@ Options: ``--per-integration-time`` divides the values of the ROIs, the spectra 
 they were measured by the integration time of each readout (``A.U./ms``; what was divided in the extension is not divided
 twice, and it says so),
 ``--short-names`` (``ROI 1 [A.U.]`` instead of ``ROI 1 mean (454.2-464.6 nm) [A.U.]``), ``--no-spectra``, ``--no-tif``,
-``--magnification M`` and ``--pixel-size UM`` (the calibration of the tif files, see above), ``--program`` (the
+``--magnification M`` and ``--pixel-size UM`` (the calibration of the tif files, see above), ``--demosaic METHOD`` and
+``--demosaic-float`` (the colors of the images of a color camera, see above), ``--program`` (the
 set-point, cycle and phase of the ramp), ``--delimiter``, ``-o FOLDER``, ``--experiment N`` (the experiment of the file, the last one by
 default), ``--with-spectrometers`` (in the csv of the camera, add the temperature and the ROIs of the spectrometers at the readouts of
 the camera: the closest readout of the spectrometer, or ``--interpolate``). The spectra are read from the file a few hundred

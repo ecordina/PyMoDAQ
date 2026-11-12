@@ -25,7 +25,11 @@ usual tools read, next to the h5 file (or in the folder of ``-o``), with its nam
   the size of a pixel (the calibration of ImageJ, in um: the pitch of the sensor the camera told, times its binning, divided
   by ``--magnification``, or ``--pixel-size`` UM measured on the sample), the display range, the camera (make, model, serial
   number, window and binning of the sensor), the software, the date of the first image and, in the label of each image, its
-  time, the temperature and the exposure time;
+  time, the temperature and the exposure time. The images of a **color camera** are recorded as the Bayer mosaic (one
+  channel of raw counts) unless the extension was told otherwise: the tif then holds the colors made from it, red, green and
+  blue channels, by **bilinear interpolation** (nothing is scaled: no white balance, no color matrix) or by the method of
+  ``--demosaic`` (``raw``: the mosaic itself, ``nearest``, ``cubic``, ``malvar``, ``superpixel``); the tif says which in its
+  description. The counts stay integers (rounded), ``--demosaic-float`` writes 32 bits floats;
 * **what was written about the experiment**, ``<file>_experiment.txt``: the title, the sample, the operator, the
   protocol, the observations noted while it ran with their time, the instruments, the ROIs, the units, and the files
   which were written; the observations are also in ``<file>_notes.csv`` (``time (s) | clock time | observation``).
@@ -61,7 +65,7 @@ import re
 import sys
 import time
 import warnings
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Callable, Iterator, Optional, Sequence
 
@@ -889,6 +893,276 @@ def export_spectrum_crops(unit: UnitData, t0: float, stem: Path, options) -> tup
 
 
 # ----------------------------------------------------------------------------------------------------------------------
+# the colors of a Bayer mosaic
+# ----------------------------------------------------------------------------------------------------------------------
+#: What the images of a color camera are made of when ``--demosaic`` is not given (see :func:`demosaic`)
+DEFAULT_DEMOSAIC = 'bilinear'
+#: How the colors can be made from the mosaic (``--demosaic``), in the words of the description of the tif files
+DEMOSAIC_WORDS = {
+    'raw': 'the raw Bayer mosaic as the sensor measured it (1 channel, no interpolation)',
+    'bilinear': 'bilinear interpolation: each color a pixel did not measure is the mean of the pixels of that color among '
+                'its 8 neighbours, the pixels which measured a color keep their count',
+    'nearest': 'nearest neighbour: each color a pixel did not measure is copied from the pixel of that color of its block '
+               'of 2 x 2 pixels',
+    'cubic': 'cubic interpolation (Catmull-Rom, weights -1/16 9/16 9/16 -1/16 on the 4 nearest pixels of the color along '
+             'rows and columns, the two directions averaged for green), the pixels which measured a color keep their count',
+    'malvar': 'gradient-corrected linear interpolation (Malvar, He and Cutler, 2004: 5 x 5 filters which add to the '
+              'bilinear value the gradient of the pixel own color), the pixels which measured a color keep their count',
+    'superpixel': 'one pixel per block of 2 x 2 pixels (half the size): the red and the blue pixel of the block, the mean '
+                  'of its two green pixels, nothing is interpolated',
+}
+DEMOSAIC_METHODS = tuple(DEMOSAIC_WORDS)
+#: (row, column) of a red pixel in the first 2 x 2 block of the sensor, by the name the driver of Thorlabs (pylablib) gives to
+#: the phase of the filters (it spells "green_left_or_red": both are known). The same as ``bayer.py``, which this file cannot
+#: import: it is meant to run alone
+PHASE_OFFSETS = {'red': (0, 0), 'blue': (1, 1), 'green_left_of_red': (0, 1), 'green_left_of_blue': (1, 0),
+                 'green_left_or_red': (0, 1), 'green_left_or_blue': (1, 0)}
+#: What an interpolation needs around a pixel: the mosaic is padded by reflection (which keeps the Bayer pattern: an even
+#: width) with this many pixels
+BAYER_PAD = 4
+
+
+def bayer_masks(shape: tuple, offset: tuple) -> np.ndarray:
+    """Which pixels measured red, green and blue: bool array ``(3, rows, columns)``, `offset` is the (row, column) of a red
+    pixel"""
+    rows, columns = np.indices(shape)
+    red = ((rows - offset[0]) % 2 == 0) & ((columns - offset[1]) % 2 == 0)
+    blue = ((rows - offset[0]) % 2 == 1) & ((columns - offset[1]) % 2 == 1)
+    return np.stack([red, ~(red | blue), blue])
+
+
+def _box(array: np.ndarray) -> np.ndarray:
+    """The sum of each pixel and its 8 neighbours (zero outside of the image)"""
+    padded = np.pad(array, 1)
+    rows, columns = array.shape
+    return sum(padded[i:i + rows, j:j + columns] for i in range(3) for j in range(3))
+
+
+def _bilinear(mosaic: np.ndarray, offset: tuple) -> np.ndarray:
+    found = bayer_masks(mosaic.shape, offset)
+    out = np.empty((3,) + mosaic.shape, dtype=np.float32)
+    for color in range(3):
+        mask = found[color].astype(np.float32)
+        mean = _box(mosaic * mask) / np.maximum(_box(mask), 1)
+        out[color] = np.where(found[color], mosaic, mean)
+    return out
+
+
+def _nearest(mosaic: np.ndarray, offset: tuple) -> np.ndarray:
+    pad = 2
+    padded = np.pad(mosaic, pad, mode='reflect')
+    rows, columns = np.indices(mosaic.shape)
+    top = offset[0] + 2 * ((rows - offset[0]) // 2) + pad  # the first pixel of the block of each pixel, in `padded`
+    left = offset[1] + 2 * ((columns - offset[1]) // 2) + pad
+    found = bayer_masks(mosaic.shape, offset)
+    green = np.where(found[0], padded[top, left + 1], np.where(found[2], padded[top + 1, left], mosaic))
+    return np.stack([padded[top, left], green, padded[top + 1, left + 1]]).astype(np.float32)
+
+
+def _cubic(mosaic: np.ndarray, offset: tuple) -> np.ndarray:
+    padded = np.pad(mosaic, BAYER_PAD, mode='reflect')
+    rows = np.indices(padded.shape)[0]
+    found = bayer_masks(padded.shape, offset)
+
+    def middle(plane, axis):  # the value half way between samples 2 pixels apart, from the 4 nearest
+        near = np.roll(plane, 1, axis) + np.roll(plane, -1, axis)
+        far = np.roll(plane, 3, axis) + np.roll(plane, -3, axis)
+        return (9 * near - far) / 16
+
+    out = np.empty((3,) + padded.shape, dtype=np.float32)
+    red_rows = (rows - offset[0]) % 2 == 0
+    for color, in_rows in ((0, red_rows), (2, ~red_rows)):  # red and blue: on the rows which hold them, then between rows
+        along = np.where(found[color], padded, np.where(in_rows, middle(padded * found[color], 1), 0))
+        out[color] = np.where(in_rows, along, middle(along, 0))
+    known = padded * found[1]  # green: the mean of what the row and the column say
+    out[1] = np.where(found[1], padded, (middle(known, 1) + middle(known, 0)) / 2)
+    return out[:, BAYER_PAD:-BAYER_PAD, BAYER_PAD:-BAYER_PAD]
+
+
+_MALVAR = {
+    'green': ((0, 0, -1, 0, 0), (0, 0, 2, 0, 0), (-1, 2, 4, 2, -1), (0, 0, 2, 0, 0), (0, 0, -1, 0, 0)),
+    'row': ((0, 0, .5, 0, 0), (0, -1, 0, -1, 0), (-1, 4, 5, 4, -1), (0, -1, 0, -1, 0), (0, 0, .5, 0, 0)),
+    'column': ((0, 0, -1, 0, 0), (0, -1, 4, -1, 0), (.5, 0, 5, 0, .5), (0, -1, 4, -1, 0), (0, 0, -1, 0, 0)),
+    'diagonal': ((0, 0, -1.5, 0, 0), (0, 2, 0, 2, 0), (-1.5, 0, 6, 0, -1.5), (0, 2, 0, 2, 0), (0, 0, -1.5, 0, 0)),
+}
+
+
+def _malvar(mosaic: np.ndarray, offset: tuple) -> np.ndarray:
+    padded = np.pad(mosaic, BAYER_PAD, mode='reflect')
+    rows, columns = np.indices(padded.shape)
+    in_row, in_column = (rows - offset[0]) % 2, (columns - offset[1]) % 2
+
+    def filtered(name):
+        total = np.zeros_like(padded)
+        for dy, line in enumerate(_MALVAR[name], -2):
+            for dx, weight in enumerate(line, -2):
+                if weight:
+                    total += weight * np.roll(padded, (-dy, -dx), (0, 1))
+        return total / 8
+
+    red, blue = (in_row == 0) & (in_column == 0), (in_row == 1) & (in_column == 1)
+    green_in_red_row, green_in_blue_row = (in_row == 0) & (in_column == 1), (in_row == 1) & (in_column == 0)
+    horizontal, vertical, diagonal = filtered('row'), filtered('column'), filtered('diagonal')
+    out = np.empty((3,) + padded.shape, dtype=np.float32)
+    out[0] = np.select([red, green_in_red_row, green_in_blue_row], [padded, horizontal, vertical], diagonal)
+    out[2] = np.select([blue, green_in_blue_row, green_in_red_row], [padded, horizontal, vertical], diagonal)
+    out[1] = np.where(red | blue, filtered('green'), padded)
+    return out[:, BAYER_PAD:-BAYER_PAD, BAYER_PAD:-BAYER_PAD]
+
+
+def _superpixel(mosaic: np.ndarray, offset: tuple) -> np.ndarray:
+    r0, c0 = offset
+    rows, columns = (mosaic.shape[0] - r0) // 2, (mosaic.shape[1] - c0) // 2
+
+    def part(dy, dx):
+        return mosaic[r0 + dy:r0 + dy + 2 * rows:2, c0 + dx:c0 + dx + 2 * columns:2]
+
+    return np.stack([part(0, 0), (part(0, 1) + part(1, 0)) / 2, part(1, 1)]).astype(np.float32)
+
+
+_DEMOSAIC = {'bilinear': _bilinear, 'nearest': _nearest, 'cubic': _cubic, 'malvar': _malvar, 'superpixel': _superpixel}
+
+
+def demosaic(mosaic, offset: tuple, method: str = DEFAULT_DEMOSAIC) -> np.ndarray:
+    """The colors of a Bayer mosaic: ``(3, rows, columns)`` floats (red, green, blue), counts which nothing scaled
+
+    No white balance, no color matrix and no clipping: only the colors a pixel did not measure are made, by `method` (see
+    :data:`DEMOSAIC_WORDS`; ``superpixel`` gives an image of half the size).
+
+    Parameters
+    ----------
+    mosaic: ndarray
+        2D, one count per pixel
+    offset: tuple of int
+        (row, column) of a red pixel in the first 2 x 2 block, each 0 or 1
+    method: str
+        One of :data:`DEMOSAIC_METHODS` but ``raw``
+    """
+    mosaic = np.asarray(mosaic, dtype=np.float32)
+    if mosaic.ndim != 2:
+        raise ValueError('The Bayer mosaic is a 2D image')
+    if method not in _DEMOSAIC:
+        raise ValueError(f'{method!r} is not a way to make the colors of a mosaic: {", ".join(DEMOSAIC_METHODS)}')
+    return _DEMOSAIC[method](mosaic, (int(offset[0]) % 2, int(offset[1]) % 2))
+
+
+class ColorFrames:
+    """A time series of Bayer mosaics seen as a series of color images, made one frame at a time (a series may be much bigger
+    than the memory): the three channels of :meth:`channel` stand for the arrays of a :class:`Series`
+
+    The integer counts stay integers (rounded, and kept between 0 and what the type holds: an interpolation can overshoot)
+    unless `dtype` is a float.
+    """
+
+    def __init__(self, source, offset: tuple, method: str, dtype):
+        self.source, self.offset, self.method, self.dtype = source, offset, method, np.dtype(dtype)
+        rows, columns = source.shape[1:]
+        if method == 'superpixel':
+            rows, columns = (rows - offset[0]) // 2, (columns - offset[1]) // 2
+        self.frame_shape = (int(rows), int(columns))
+        self._last: tuple = (None, None)
+
+    def __len__(self) -> int:
+        return len(self.source)
+
+    def frame(self, index: int) -> np.ndarray:
+        """The colors of the mosaic number `index`, ``(3, rows, columns)``"""
+        if self._last[0] != index:
+            colors = demosaic(np.asarray(self.source[index]), self.offset, self.method)
+            if np.issubdtype(self.dtype, np.integer):
+                colors = np.clip(np.rint(colors), 0, np.iinfo(self.dtype).max)
+            self._last = (index, colors.astype(self.dtype))
+        return self._last[1]
+
+    def channel(self, color: int) -> 'ColorChannel':
+        return ColorChannel(self, color)
+
+
+class ColorChannel:
+    """One color of a :class:`ColorFrames`, as an array of images along the time (what :func:`write_tif` reads)"""
+
+    def __init__(self, frames: ColorFrames, color: int):
+        self.frames, self.color = frames, color
+        self.dtype = frames.dtype
+        self.shape = (len(frames),) + frames.frame_shape
+
+    def __len__(self) -> int:
+        return self.shape[0]
+
+    def __getitem__(self, index):
+        if isinstance(index, slice):
+            return np.stack([self[i] for i in range(*index.indices(len(self)))]) if len(self) else np.zeros(
+                (0,) + self.shape[1:], dtype=self.dtype)
+        if not isinstance(index, (int, np.integer)):
+            raise TypeError('The images of a color channel are read by their number, or a slice')
+        index = int(index) + len(self) if index < 0 else int(index)
+        if not 0 <= index < len(self):
+            raise IndexError(index)
+        return self.frames.frame(index)[self.color]
+
+
+def color_series(series: 'Series', offset: tuple, method: str, as_float: bool = False) -> 'Series':
+    """The series of mosaics `series` as a series of images of three colors (red, green, blue)
+
+    The pixels are in the type of the mosaics, rounded, unless they are floats or `as_float` is True: then 32 bits floats.
+    """
+    base = imagej_dtype(series.arrays)
+    dtype = base if np.issubdtype(base, np.integer) and not as_float else np.dtype(np.float32)
+    frames = ColorFrames(series.arrays[0], offset, method, dtype)
+    unit = series.units[0] if series.units else ''
+    return replace(series, arrays=[frames.channel(color) for color in range(3)], labels=['Red', 'Green', 'Blue'],
+                   units=[unit] * 3)
+
+
+def bayer_offset(info: dict) -> tuple:
+    """(row, column) of a red pixel in the first 2 x 2 block of the images, from what the camera said: the phase of its filters
+    on the sensor and the window of the sensor the images are (an odd start moves the pattern)"""
+    row, column = PHASE_OFFSETS.get(str(info.get('bayer_phase', '')).lower().replace(' ', '_'), (0, 0))
+    window = info.get('window')
+    if window:
+        try:
+            row, column = (row - int(window[2])) % 2, (column - int(window[0])) % 2
+        except (TypeError, ValueError, IndexError):
+            pass
+    return row, column
+
+
+def crop_origin(roi: dict) -> tuple:
+    """(row, column) of the sensor pixel which is the first of a crop, in the image (as the extension rounded its window)"""
+    try:
+        return max(int(np.floor(float(roi.get('y0', 0)) + 0.5)), 0), max(int(np.floor(float(roi.get('x0', 0)) + 0.5)), 0)
+    except (TypeError, ValueError):
+        return 0, 0
+
+
+def bayer_method(camera: 'UnitData', options) -> Optional[str]:
+    """How the colors of the images of the camera are made (``--demosaic``, bilinear if it is not given), None if the images
+    are not a Bayer mosaic (a monochrome camera, or colors which the extension already recorded): said if it was asked for"""
+    asked = getattr(options, 'demosaic', None)
+    info = camera.camera_info
+    series = [s for s in [camera.series.get('Image')] + camera.crops if s is not None]
+    if info.get('image_format') != 'bayer' or any(len(s.arrays) != 1 for s in series):
+        if asked:
+            print(f'  --demosaic {asked} is ignored: the images of the camera are not a Bayer mosaic (the file says '
+                  f'"{info.get("image_format") or "nothing"}")', file=sys.stderr)
+        return None
+    if tuple(info.get('binning') or (1, 1)) != (1, 1):
+        print('  the images of the camera were binned: the colors of a Bayer mosaic cannot be made, the mosaic is exported '
+              'as it is', file=sys.stderr)
+        return None
+    return asked or DEFAULT_DEMOSAIC
+
+
+def bayer_words(method: str, as_float: bool, info: dict) -> str:
+    """What the description of the tif says of the colors"""
+    phase = f' (Bayer phase {info["bayer_phase"]})' if info.get('bayer_phase') else ''
+    if method == 'raw':
+        return f'Images exported as {DEMOSAIC_WORDS["raw"]}{phase}.'
+    pixels = '32 bits floats' if as_float else 'counts rounded to integers, between 0 and the maximum of their type'
+    return f'Colors made from the Bayer mosaic{phase} by {DEMOSAIC_WORDS[method]}; no white balance, no color matrix; {pixels}.'
+
+
+# ----------------------------------------------------------------------------------------------------------------------
 # the camera: tif files and a csv
 # ----------------------------------------------------------------------------------------------------------------------
 def imagej_dtype(arrays) -> np.dtype:
@@ -1151,7 +1425,26 @@ def export_camera(camera: UnitData, units: dict[int, UnitData], t0: float, stem:
         return nearest(series.time[:len(series)], series.column(0), times, False, MAX_GAP)
 
     extras = camera_extras(camera, t0, options, exposure_of)
-    about_camera = camera_sentence(camera, pixel_size(camera, options)[1])
+    how_pixels = pixel_size(camera, options)[1]
+    method = bayer_method(camera, options)  # (how the colors of a Bayer mosaic are made, None: they are not a mosaic)
+    as_float = bool(getattr(options, 'demosaic_float', False))
+    offset = bayer_offset(camera.camera_info)
+    colors_note = ''
+    if method == 'superpixel':  # (a pixel of the image is a block of 2 x 2 pixels of the sensor)
+        if extras.pixel_um:
+            extras.pixel_um = (2 * extras.pixel_um[0], 2 * extras.pixel_um[1])
+        how_pixels = (how_pixels + '; ' if how_pixels else '') + 'a pixel of these images is a block of 2 x 2 pixels, twice that'
+    about_camera = camera_sentence(camera, how_pixels)
+    if method is not None:
+        about_camera = f'{about_camera} {bayer_words(method, as_float, camera.camera_info)}'.strip()
+        colors_note = ', the raw Bayer mosaic' if method == 'raw' else f', colors made from the Bayer mosaic ({method})'
+
+    def colors_of(series: Series, origin: tuple = (0, 0)) -> Series:
+        """The series as the colors the mosaics make (a crop starts at `origin` of the image: that moves the pattern)"""
+        if method is None or method == 'raw':
+            return series
+        return color_series(series, ((offset[0] - origin[0]) % 2, (offset[1] - origin[1]) % 2), method, as_float)
+
     if camera.camera_info and extras.pixel_um is None and not options.no_tif:
         print('  the camera did not say the size of its pixels: the tif files are in pixels (--pixel-size UM gives it)',
               file=sys.stderr)
@@ -1164,8 +1457,9 @@ def export_camera(camera: UnitData, units: dict[int, UnitData], t0: float, stem:
                 f'exposure {camera.attr("integration_time_ms", "")} ms (at the start), readout '
                 f'{camera.attr("readout_time_s", "")} s, {len(images)} images, pixels in {camera.intensity_units or "?"}. '
                 f'The frames of the tif are the images of the csv file of the same name. {about_camera}')
-        tif, big = write_images(images, 'camera', t0, temperature_of, stem, info, options, extras)
-        written.append((tif, f'camera: the full images, axes T, C, Y, X ({len(images)} frames{BIGTIFF_WORDS if big else ""})'))
+        tif, big = write_images(colors_of(images), 'camera', t0, temperature_of, stem, info, options, extras)
+        written.append((tif, f'camera: the full images, axes T, C, Y, X ({len(images)} frames{colors_note}'
+                             f'{BIGTIFF_WORDS if big else ""})'))
 
     crop_files: dict[str, str] = {}
     if not options.no_tif:
@@ -1177,10 +1471,10 @@ def export_camera(camera: UnitData, units: dict[int, UnitData], t0: float, stem:
             info = (f'ThermoSpectro: crop {name} of the camera {camera.attr("camera", "")}, '
                     f'window x {roi.get("x0", "?")}-{roi.get("x1", "?")}, y {roi.get("y0", "?")}-{roi.get("y1", "?")} '
                     f'pixel, {len(crop)} images, pixels in {camera.intensity_units or "?"}. {about_camera}')
-            path, big = write_images(crop, f'camera_crop_{file_part(name)}', t0, temperature_of, stem, info, options,
-                                     extras)
+            path, big = write_images(colors_of(crop, crop_origin(roi)), f'camera_crop_{file_part(name)}', t0,
+                                     temperature_of, stem, info, options, extras)
             crop_files[name] = path.name
-            written.append((path, f'camera: the pixels of the crop {name}, axes T, C, Y, X ({len(crop)} frames'
+            written.append((path, f'camera: the pixels of the crop {name}, axes T, C, Y, X ({len(crop)} frames{colors_note}'
                                   f'{BIGTIFF_WORDS if big else ""})'))
 
     if images is not None and len(images) and tif is not None:  # (which frame of the tif holds the image of each readout)
@@ -1329,6 +1623,17 @@ def parser() -> argparse.ArgumentParser:
     arguments.add_argument('--pixel-size', type=positive, metavar='UM',
                            help='the size of a pixel of the images on the sample, in um, as measured (binning included): '
                                 'the calibration of the tif files, instead of what the camera said')
+    arguments.add_argument('--demosaic', choices=DEMOSAIC_METHODS, metavar='METHOD',
+                           help='the images of a color camera which were recorded as the Bayer mosaic (1 channel): how the '
+                                f'colors are made for the tif files (default: {DEFAULT_DEMOSAIC}, red, green and blue '
+                                'channels). raw: the mosaic as the sensor measured it, nothing is made; bilinear; nearest '
+                                '(copy of the pixel of the color in the block of 2 x 2); cubic (Catmull-Rom); malvar '
+                                '(gradient-corrected linear, Malvar-He-Cutler); superpixel (half the size: red, mean of '
+                                'the two greens, blue of each block of 2 x 2, nothing is interpolated). No white balance '
+                                'and no color matrix whatever the method. Ignored for images which are not a mosaic')
+    arguments.add_argument('--demosaic-float', action='store_true',
+                           help='with --demosaic (or by default), write the colors as 32 bits floats instead of counts '
+                                'rounded to the integer type of the mosaic (6 times the size of the mosaic instead of 3)')
     arguments.add_argument('--absolute-time', action='store_true', help='the time in epoch seconds, not from the start')
     arguments.add_argument('--program', action='store_true',
                            help='add the set-point, the cycle and the phase code of the temperature ramp')
